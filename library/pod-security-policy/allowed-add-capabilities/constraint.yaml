@@ -1,0 +1,13 @@
+apiVersion: constraints.gatekeeper.sh/v1alpha1
+kind: K8sPSPAllowedAddCapabilities
+metadata:
+  name: psp-allowed-add-capabilities
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    capabilities:
+    # - "*" # * may be used to allow all capabilities
+    - SYS_TIME
