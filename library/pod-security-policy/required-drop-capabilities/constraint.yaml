@@ -1,0 +1,13 @@
+apiVersion: constraints.gatekeeper.sh/v1alpha1
+kind: K8sPSPRequiredDropCapabilities
+metadata:
+  name: psp-required-drop-capabilities
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    capabilities:
+    # - "*" # * may be used to drop all capabilities
+    - SYS_ADMIN
