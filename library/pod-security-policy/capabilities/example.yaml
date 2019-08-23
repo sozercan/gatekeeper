@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-capabilities
+  labels:
+    app: nginx-capabilities
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    securityContext:
+      capabilities:
+        add:
+        - SYS_ADMIN
+        drop:
+        - SYS_NICE

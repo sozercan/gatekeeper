@@ -7,15 +7,15 @@ violation[{"msg": msg, "details": {}}] {
     msg := sprintf("One of the required drop capabilities %v is not dropped, pod: %v. Required drop capabilities: %v", [capabilities, container.name, input.parameters.capabilities])
 }
 
-# * may be used to drop all capabilities
+# all may be used to drop all capabilities
 input_drop_capabilities_required(capabilities) {
-    input.parameters.capabilities[_] == "*"
+    input.parameters.capabilities[_] == "all"
 }
 
 input_drop_capabilities_required(capabilities) {
     not_allowed_set := {x | x = input.parameters.capabilities[_]}
-    test := capabilities & not_allowed_set
-    count(test) == 0
+    test := capabilities - not_allowed_set
+    not count(test) > 1
 }
 
 input_containers[c] {

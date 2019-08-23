@@ -86,7 +86,7 @@ input_containers_many = [
 
 input_parameters_wildcard = {
     "capabilities": [
-        "*"
+        "all"
     ]
 }
 
