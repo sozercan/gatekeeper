@@ -6,10 +6,16 @@ test_input_allowed_add_capabilities_allowed_all {
     count(results) == 0
 }
 
-test_input_allowed_add_capabilities_not_allowed_all {
-    input := { "review": input_review, "parameters": input_parameters_wildcard}
+test_input_allowed_add_capabilities_add_wildcard{
+    input := { "review": input_review_wildcard, "parameters": input_parameters_wildcard}
     results := violation with input as input
     count(results) == 0
+}
+
+test_input_allowed_add_capabilities_drop_all {
+    input := { "review": input_review_wildcard, "parameters": input_parameters_wildcard}
+    results := violation with input as input
+    count(results) > 0
 }
 
 test_input_allowed_add_capabilities_allowed_in_list {
@@ -47,7 +53,7 @@ input_review = {
     }
 }
 
-input_review_drop_all = {
+input_review_wildcard = {
     "object": {
         "metadata": {
             "name": "nginx"
@@ -57,6 +63,7 @@ input_review_drop_all = {
       }
     }
 }
+
 
 input_review_many = {
     "object": {
@@ -75,8 +82,24 @@ input_containers_wildcard = [
     "image": "nginx",
     "securityContext": {
         "capabilities": {
+            "add": [
+                "SYS_ADMIN"
+            ],
             "drop": [
-                "SYS_TIME"
+                "NET_ADMIN"
+            ]
+        }
+    }
+}]
+
+input_containers_drop_all = [
+{
+    "name": "nginx",
+    "image": "nginx",
+    "securityContext": {
+        "capabilities": {
+            "drop": [
+                "all"
             ]
         }
     }

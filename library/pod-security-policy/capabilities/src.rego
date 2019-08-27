@@ -12,7 +12,7 @@ input_capabilities(capabilities) {
 }
 
 input_capabilities(capabilities) {
-    input.parameters.dropCapabilities[_] == "all"
+    input.parameters.dropCapabilities[_] != "all"
 }
 
 input_capabilities(capabilities) {
@@ -23,9 +23,9 @@ input_capabilities(capabilities) {
 }
 
 input_capabilities(capabilities) {
-    allowed_set := {x | x = input.parameters.dropCapabilities[_]}
+    not_allowed_set := {x | x = input.parameters.dropCapabilities[_]}
     drop_capabilities := {x | x = capabilities.drop[_]}
-    test := drop_capabilities - allowed_set
+    test := drop_capabilities - not_allowed_set
     not count(test) > 0
 }
 

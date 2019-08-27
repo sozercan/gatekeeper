@@ -3,7 +3,7 @@ package k8spsprequireddropcapabilities
 test_input_required_drop_capabilities_all {
     input := { "review": input_review, "parameters": input_parameters_wildcard}
     results := violation with input as input
-    count(results) == 0
+    count(results) == 1
 }
 
 test_input_required_drop_capabilities_in_list {
