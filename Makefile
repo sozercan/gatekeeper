@@ -7,6 +7,8 @@ IMG := $(REPOSITORY):latest
 
 VERSION := v3.0.4-beta.1
 
+ISIMGLOCAL := false
+
 BUILD_COMMIT := $(shell ./build/get-build-commit.sh)
 BUILD_TIMESTAMP := $(shell ./build/get-build-timestamp.sh)
 BUILD_HOSTNAME := $(shell ./build/get-build-hostname.sh)
@@ -117,7 +119,7 @@ docker-build:
 
 	@test -s ./overlays/dev/manager_image_patch.yaml || bash -c 'echo -e ${MANAGER_IMAGE_PATCH} > ./overlays/dev/manager_image_patch.yaml'
 
-ifeq ($(TRAVIS),true)
+ifeq ($(ISIMGLOCAL),true)
 	@sed -i '/^        name: manager/a \ \ \ \ \ \ \ \ imagePullPolicy: IfNotPresent' ./overlays/dev/manager_image_patch.yaml
 endif
 
@@ -132,6 +134,8 @@ docker-push:
 
 release:
 	@sed -i -e 's/^VERSION := .*/VERSION := ${NEWVERSION}/' ./Makefile
+
+release-deploy:
 	@sed -i'' -e 's@image: $(REPOSITORY):.*@image: $(REPOSITORY):'"$(NEWVERSION)"'@' ./config/manager/manager.yaml ./deploy/gatekeeper.yaml
 
 # Travis Dev Deployment
