@@ -53,4 +53,30 @@ jobs:
             repo: open-policy-agent/gatekeeper
             branch: master
             tags: true
-
+    - stage: "verify"
+      name: "e2e on released image"
+      if: repo = open-policy-agent/gatekeeper AND type != pull_request AND tag IS present
+      before_script:
+      - KIND_VERSION=0.4.0
+      - KUSTOMIZE_VERSION=3.0.2
+      # Download and install kind
+      - curl -L https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-linux-amd64 --output kind && chmod +x kind && sudo mv kind /usr/local/bin/
+      # Create kind cluster
+      - |
+        if [ $(kind get clusters) ]; then
+          export KUBECONFIG="$(kind get kubeconfig-path --name="kind")"
+        else
+          kind create cluster
+        fi
+      # Get kubeconfig
+      - export KUBECONFIG="$(kind get kubeconfig-path --name="kind")"
+      # Update deployment yamls with the released tag
+      - make release-deploy NEWVERSION=TRAVIS_TAG
+      # Download and install kubectl
+      - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl && chmod +x ./kubectl && sudo mv kubectl /usr/local/bin/
+      # Download and install kustomize
+      - curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/v${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64 --output kustomize && chmod +x kustomize && sudo mv kustomize /usr/local/bin/
+      script:
+      - make deploy
+      - make test-e2e
+      - echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system gatekeeper-controller-manager-0 manager
