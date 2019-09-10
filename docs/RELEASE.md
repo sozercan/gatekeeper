@@ -34,7 +34,7 @@ Publishing involves creating a release tag and creating a new *Release* on GitHu
 	git diff
 	```
 
-## Building
+## Building and releasing
 
 1. Commit the changes and push to remote repository to create a pull request.
 
@@ -53,7 +53,8 @@ Publishing involves creating a release tag and creating a new *Release* on GitHu
 
 1. Pushing the release tag will trigger the Travis-CI pipeline to run `make travis-dev-release`. 
 This will build the `quay.io/open-policy-agent/gatekeeper` image automatically, Then publish the new release image tag and the `latest` image tag 
-to the `quay.io/open-policy-agent/gatekeeper` repository.
+to the `quay.io/open-policy-agent/gatekeeper` repository. 
+Upon completion of the `build, release` stage, the `verify release` stage will run e2e tests using the new released tag.
 
 ## Publishing
 
