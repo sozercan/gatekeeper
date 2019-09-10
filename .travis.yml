@@ -37,7 +37,7 @@ jobs:
       - make test-e2e
       - echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system gatekeeper-controller-manager-0 manager
     - stage: "build, test, deploy"
-      if: branch = master
+      if: branch = master AND repo = open-policy-agent/gatekeeper AND type != pull_request
       script: make
       deploy:
         - provider: script
