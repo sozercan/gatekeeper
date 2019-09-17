@@ -7,7 +7,9 @@ IMG := $(REPOSITORY):latest
 
 VERSION := v3.0.4-beta.1
 
-ISIMGLOCAL := false
+USE_LOCAL_IMG ?= false
+KIND_VERSION=0.4.0
+KUSTOMIZE_VERSION=3.0.2
 
 BUILD_COMMIT := $(shell ./build/get-build-commit.sh)
 BUILD_TIMESTAMP := $(shell ./build/get-build-timestamp.sh)
@@ -48,6 +50,22 @@ test:
 
 test-e2e:
 	bats -t test/bats/test.bats
+
+e2e-bootstrap:
+	# Download and install kind
+	curl -L https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-linux-amd64 --output kind && chmod +x kind && sudo mv kind /usr/local/bin/
+	# Download and install kubectl
+	curl -LO https://storage.googleapis.com/kubernetes-release/release/$$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl && chmod +x ./kubectl && sudo mv kubectl /usr/local/bin/
+	# Download and install kustomize
+	curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/v${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64 --output kustomize && chmod +x kustomize && sudo mv kustomize /usr/local/bin/
+	# Create a new kind cluster
+	kind create cluster
+
+e2e-build-load-image: docker-build
+	kind load docker-image --name kind ${IMG}
+
+e2e-verify-release: patch-image deploy test-e2e
+	echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system gatekeeper-controller-manager-0 manager
 
 # Build manager binary
 manager: generate fmt vet
@@ -115,14 +133,14 @@ docker-push-release:  docker-tag-release
 # Build the docker image
 docker-build:
 	docker build --pull . -t ${IMG}
+
+# Update manager_image_patch.yaml with image tag
+patch-image:
 	@echo "updating kustomize image patch file for manager resource"
-
 	@test -s ./overlays/dev/manager_image_patch.yaml || bash -c 'echo -e ${MANAGER_IMAGE_PATCH} > ./overlays/dev/manager_image_patch.yaml'
-
-ifeq ($(ISIMGLOCAL),true)
+ifeq ($(USE_LOCAL_IMG),true)
 	@sed -i '/^        name: manager/a \ \ \ \ \ \ \ \ imagePullPolicy: IfNotPresent' ./overlays/dev/manager_image_patch.yaml
 endif
-
 	@sed -i'' -e 's@image: .*@image: '"${IMG}"'@' ./overlays/dev/manager_image_patch.yaml
 
 docker-build-ci:
@@ -142,7 +160,7 @@ release-deploy:
 travis-dev-deploy: docker-login docker-build-ci docker-push-dev
 
 # Travis Release
-travis-dev-release: docker-login docker-build-ci docker-push-release
+travis-release-deploy: docker-login docker-build-ci docker-push-release
 
 # Delete gatekeeper from a cluster. Note this is not a complete uninstall, just a dev convenience
 uninstall:
