@@ -40,7 +40,7 @@ jobs:
             tags: true
         - provider: script
           skip_cleanup: true
-          script: make e2e-bootstrap && export KUBECONFIG="$(kind get kubeconfig-path --name="kind")" && make e2e-verify-release IMG=quay.io/open-policy-agent/gatekeeper:${TRAVIS_TAG} USE_LOCAL_IMG=false
+          script: make e2e-bootstrap && make patch-image IMG=quay.io/open-policy-agent/gatekeeper:${TRAVIS_TAG} USE_LOCAL_IMG=false && export KUBECONFIG="$(kind get kubeconfig-path --name="kind")" && make deploy && make test-e2e && echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system gatekeeper-controller-manager-0 manager
           on:
             repo: open-policy-agent/gatekeeper
             branch: e2e # only run verify e2e on release image tag for tags on master
