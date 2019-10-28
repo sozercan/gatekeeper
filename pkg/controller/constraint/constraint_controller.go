@@ -19,6 +19,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
+
+	"go.opencensus.io/tag"
+
 	"github.com/go-logr/logr"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/gatekeeper/pkg/util"
@@ -134,6 +138,11 @@ func (r *ReconcileConstraint) Reconcile(request reconcile.Request) (reconcile.Re
 			return reconcile.Result{}, err
 		}
 		status["enforced"] = true
+
+		mCtx, _ := tag.New(context.Background(), tag.Insert(metrics.KeyMethod, "constraint"))
+		// stats.Record(mCtx, util.TotalConstraints.M(1))
+		metrics.Record(mCtx, metrics.TotalConstraintsStat.M(1))
+
 		util.SetHAStatus(instance, status)
 		if err := r.Update(context.Background(), instance); err != nil {
 			return reconcile.Result{Requeue: true}, nil

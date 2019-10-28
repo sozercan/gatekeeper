@@ -7,6 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
+
+	"go.opencensus.io/tag"
+
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	constraintTypes "github.com/open-policy-agent/frameworks/constraint/pkg/types"
 	"github.com/pkg/errors"
@@ -22,13 +26,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 )
 
-var log = logf.Log.WithName("controller").WithValues("metaKind", "audit")
-
 const (
 	crdName       = "constrainttemplates.templates.gatekeeper.sh"
 	constraintsGV = "constraints.gatekeeper.sh/v1beta1"
 	msgSize       = 256
 )
+
+var log = logf.Log.WithName("controller").WithValues("metaKind", "audit")
 
 var (
 	auditInterval             = flag.Int("auditInterval", 60, "interval to run audit in seconds. defaulted to 60 secs if unspecified ")
@@ -278,6 +282,11 @@ func (ucloop *updateConstraintLoop) updateConstraintStatus(ctx context.Context, 
 	unstructured.SetNestedField(instance.Object, timestamp, "status", "auditTimestamp")
 	// update constraint status totalViolations
 	unstructured.SetNestedField(instance.Object, totalViolations, "status", "totalViolations")
+
+	mCtx, _ := tag.New(context.Background(), tag.Insert(metrics.KeyMethod, "audit"))
+	// stats.Record(mCtx, util.TotalViolations.M(totalViolations))
+	metrics.Record(mCtx, metrics.TotalViolationsStat.M(totalViolations))
+
 	// update constraint status violations
 	if len(violations) == 0 {
 		_, found, err := unstructured.NestedSlice(instance.Object, "status", "violations")
