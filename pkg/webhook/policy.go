@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
@@ -124,11 +125,16 @@ type validationHandler struct {
 
 	// for testing
 	injectedConfig *v1alpha1.Config
+
+	reporter StatsReporter
 }
 
 // Handle the validation request
 func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atypes.Response {
 	log := log.WithValues("hookType", "validation")
+
+	var ttStart = time.Now()
+
 	if isGkServiceAccount(req.AdmissionRequest.UserInfo) {
 		return admission.ValidationResponse(true, "Gatekeeper does not self-manage")
 	}
@@ -164,6 +170,12 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 		return vResp
 	}
 
+	reporter, err := NewStatsReporter()
+	h.reporter = reporter
+	if err != nil {
+		log.Error(err, "statsreporter could not start")
+	}
+
 	resp, err := h.reviewRequest(ctx, req)
 	if err != nil {
 		log.Error(err, "error executing query")
@@ -171,9 +183,16 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 		if vResp.Response.Result == nil {
 			vResp.Response.Result = &metav1.Status{}
 		}
+
+		if h.reporter != nil {
+			// Only report valid requests
+			h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(ttStart))
+		}
+
 		vResp.Response.Result.Code = http.StatusInternalServerError
 		return vResp
 	}
+
 	res := resp.Results()
 	if len(res) != 0 {
 		var msgs []string
@@ -187,11 +206,25 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 			if vResp.Response.Result == nil {
 				vResp.Response.Result = &metav1.Status{}
 			}
+
+			if h.reporter != nil {
+				// Only report valid requests
+				h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(ttStart))
+			}
+
 			vResp.Response.Result.Code = http.StatusForbidden
 			return vResp
 		}
 	}
-	return admission.ValidationResponse(true, "")
+
+	vResp := admission.ValidationResponse(true, "")
+
+	if h.reporter != nil {
+		// Only report valid requests
+		h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(ttStart))
+	}
+
+	return vResp
 }
 
 func (h *validationHandler) getConfig(ctx context.Context) (*v1alpha1.Config, error) {

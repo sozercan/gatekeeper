@@ -7,10 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
-
-	"go.opencensus.io/tag"
-
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	constraintTypes "github.com/open-policy-agent/frameworks/constraint/pkg/types"
 	"github.com/pkg/errors"
@@ -42,13 +38,14 @@ var (
 
 // AuditManager allows us to audit resources periodically
 type AuditManager struct {
-	client  client.Client
-	opa     *opa.Client
-	stopper chan struct{}
-	stopped chan struct{}
-	cfg     *rest.Config
-	ctx     context.Context
-	ucloop  *updateConstraintLoop
+	client   client.Client
+	opa      *opa.Client
+	stopper  chan struct{}
+	stopped  chan struct{}
+	cfg      *rest.Config
+	ctx      context.Context
+	ucloop   *updateConstraintLoop
+	reporter StatsReporter
 }
 
 type auditResult struct {
@@ -74,12 +71,18 @@ type StatusViolation struct {
 
 // New creates a new manager for audit
 func New(ctx context.Context, cfg *rest.Config, opa *opa.Client) (*AuditManager, error) {
+	reporter, err := NewStatsReporter()
+	if err != nil {
+		return nil, err
+	}
+
 	am := &AuditManager{
-		opa:     opa,
-		stopper: make(chan struct{}),
-		stopped: make(chan struct{}),
-		cfg:     cfg,
-		ctx:     ctx,
+		opa:      opa,
+		stopper:  make(chan struct{}),
+		stopped:  make(chan struct{}),
+		cfg:      cfg,
+		ctx:      ctx,
+		reporter: reporter,
 	}
 	return am, nil
 }
@@ -228,6 +231,8 @@ func (am *AuditManager) writeAuditResults(ctx context.Context, resourceList *met
 		// get each constraint
 		for _, item := range instanceList.Items {
 			updateConstraints[item.GetSelfLink()] = item
+
+			am.reporter.ReportTotalViolations(item.GetSelfLink(), totalViolations[item.GetSelfLink()])
 		}
 
 		if len(updateConstraints) > 0 {
@@ -283,9 +288,9 @@ func (ucloop *updateConstraintLoop) updateConstraintStatus(ctx context.Context, 
 	// update constraint status totalViolations
 	unstructured.SetNestedField(instance.Object, totalViolations, "status", "totalViolations")
 
-	mCtx, _ := tag.New(context.Background(), tag.Insert(metrics.KeyMethod, "audit"))
+	// mCtx, _ := tag.New(context.Background(), tag.Insert(metrics.KeyMethod, "audit"))
 	// stats.Record(mCtx, util.TotalViolations.M(totalViolations))
-	metrics.Record(mCtx, metrics.TotalViolationsStat.M(totalViolations))
+	// metrics.Record(mCtx, metrics.TotalViolationsStat.M(totalViolations))
 
 	// update constraint status violations
 	if len(violations) == 0 {

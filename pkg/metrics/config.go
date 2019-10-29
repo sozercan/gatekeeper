@@ -8,7 +8,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 )
 
-var log = logf.Log.WithName("controller").WithValues("metaKind", "metrics")
+var log = logf.Log.WithName("metrics")
 
 // metricsBackend specifies the backend to use for metrics
 type metricsBackend string
