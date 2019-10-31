@@ -61,6 +61,7 @@ func newReconciler(mgr manager.Manager, gvk schema.GroupVersionKind, opa *opa.Cl
 		opa:    opa,
 		log:    log.WithValues("kind", gvk.Kind, "apiVersion", gvk.GroupVersion().String()),
 		gvk:    gvk,
+		// reporter: reporter,
 	}
 }
 
@@ -92,6 +93,7 @@ type ReconcileConstraint struct {
 	opa    *opa.Client
 	gvk    schema.GroupVersionKind
 	log    logr.Logger
+	// reporter StatsReporter
 }
 
 // Reconcile reads that state of the cluster for a constraint object and makes changes based on the state read
@@ -134,10 +136,6 @@ func (r *ReconcileConstraint) Reconcile(request reconcile.Request) (reconcile.Re
 			return reconcile.Result{}, err
 		}
 		status["enforced"] = true
-
-		// mCtx, _ := tag.New(context.Background(), tag.Insert(metrics.KeyMethod, "constraint"))
-		// stats.Record(mCtx, util.TotalConstraints.M(1))
-		// metrics.Record(mCtx, metrics.TotalConstraintsStat.M(1))
 
 		util.SetHAStatus(instance, status)
 		if err := r.Update(context.Background(), instance); err != nil {

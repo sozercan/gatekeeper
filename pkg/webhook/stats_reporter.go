@@ -89,9 +89,14 @@ func (r *reporter) ReportRequest(req *admissionv1beta1.AdmissionRequest, resp *a
 		return err
 	}
 
-	metrics.Record(ctx, requestCountM.M(1))
+	r.report(ctx, requestCountM.M(1))
 	// Convert time.Duration in nanoseconds to milliseconds
-	metrics.Record(ctx, responseTimeInMsecM.M(float64(d/time.Millisecond)))
+	r.report(ctx, responseTimeInMsecM.M(float64(d/time.Millisecond)))
+	return nil
+}
+
+func (r *reporter) report(ctx context.Context, m stats.Measurement) error {
+	metrics.Record(ctx, m)
 	return nil
 }
 

@@ -70,6 +70,13 @@ func main() {
 	}
 	metrics.SetCurMetricsExporter(e)
 
+	// reporter, err := NewStatsReporter()
+	// if err != nil {
+	// 	log.Error(err, "unable to set up statsreporter")
+	// 	os.Exit(1)
+	// }
+	// TODO(sertac): pass reporter
+
 	// Get a config to talk to the apiserver
 	log.Info("setting up client for manager")
 	cfg, err := config.GetConfig()

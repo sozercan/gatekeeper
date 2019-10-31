@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"errors"
 
 	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
 	"go.opencensus.io/stats"
@@ -10,30 +9,44 @@ import (
 	"go.opencensus.io/tag"
 )
 
-var (
-	KeyMethod, _ = tag.NewKey("method")
-	KeyStatus, _ = tag.NewKey("status")
-	KeyError, _  = tag.NewKey("error")
+const (
+	totalViolationsName  = "violations_total"
+	constraintsTotalName = "constraints_total"
+	methodType           = "audit"
 )
 
 var (
-	TotalViolationsStat = stats.Int64("violations_total", "Total number of violations per constraint", stats.UnitNone)
-	// TotalConstraintsStat = stats.Int64("constraints_total", "Total number of enforced constraints", stats.UnitNone)
+	violationsTotalM  = stats.Int64(totalViolationsName, "Total number of violations per constraint", stats.UnitNone)
+	constraintsTotalM = stats.Int64(constraintsTotalName, "Total number of enforced constraints", stats.UnitNone)
+
+	methodTypeKey     = tag.MustNewKey("method_type")
+	constraintKindKey = tag.MustNewKey("constraint_kind")
+	constraintNameKey = tag.MustNewKey("constraint_name")
 )
 
 func init() {
-	views := []*view.View{{
-		Name:        "violations_total",
-		Measure:     TotalViolationsStat,
-		Aggregation: view.LastValue(),
-		TagKeys:     []tag.Key{KeyMethod, KeyStatus},
-	},
-	// {
-	// 	Name:        "constraints_total",
-	// 	Measure:     TotalConstraintsStat,
-	// 	Aggregation: view.Count(),
-	// 	TagKeys:     []tag.Key{KeyMethod},
-	// }
+	register()
+}
+
+func register() {
+	tagKeys := []tag.Key{
+		methodTypeKey,
+		constraintKindKey,
+		constraintNameKey}
+
+	views := []*view.View{
+		{
+			Name:        totalViolationsName,
+			Measure:     violationsTotalM,
+			Aggregation: view.LastValue(),
+			TagKeys:     tagKeys,
+		},
+		{
+			Name:        constraintsTotalName,
+			Measure:     constraintsTotalM,
+			Aggregation: view.Count(),
+			TagKeys:     tagKeys,
+		},
 	}
 
 	if err := view.Register(views...); err != nil {
@@ -41,46 +54,55 @@ func init() {
 	}
 }
 
-func (r *Reporter) ReportTotalViolations(constraint string, v int64) error {
+func (r *reporter) ReportTotalViolations(constraintKind, constraintName string, v int64) error {
 	ctx, err := tag.New(
 		r.ctx,
-		tag.Insert(KeyMethod, "audit"),
-		tag.Insert(KeyStatus, constraint))
+		tag.Insert(methodTypeKey, methodType),
+		tag.Insert(constraintKindKey, constraintKind),
+		tag.Insert(constraintNameKey, constraintName))
 	if err != nil {
 		return err
 	}
 
-	return r.report(ctx, TotalViolationsStat.M(v))
+	return r.report(ctx, violationsTotalM.M(v))
 }
 
-type StatsReporter interface {
-	ReportTotalViolations(constraint string, v int64) error
-}
-
-func NewStatsReporter() (*Reporter, error) {
-	r := &Reporter{}
-
+func (r *reporter) ReportConstraints(constraintKind, constraintName string, v int64) error {
 	ctx, err := tag.New(
-		context.Background())
+		r.ctx,
+		tag.Insert(methodTypeKey, methodType),
+		tag.Insert(constraintKindKey, constraintKind),
+		tag.Insert(constraintNameKey, constraintName))
+	if err != nil {
+		return err
+	}
+
+	return r.report(ctx, constraintsTotalM.M(v))
+}
+
+// StatsReporter reports audit metrics
+type StatsReporter interface {
+	ReportTotalViolations(constraintKind, constraintName string, v int64) error
+	ReportConstraints(constraintKind, constraintName string, v int64) error
+}
+
+// NewStatsReporter creaters a reporter for audit metrics
+func NewStatsReporter() (StatsReporter, error) {
+	ctx, err := tag.New(
+		context.Background(),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	r.ctx = ctx
-	r.initialized = true
-	return r, nil
+	return &reporter{ctx: ctx}, nil
 }
 
-type Reporter struct {
-	ctx         context.Context
-	initialized bool
+type reporter struct {
+	ctx context.Context
 }
 
-func (r *Reporter) report(ctx context.Context, m stats.Measurement) error {
-	if !r.initialized {
-		return errors.New("StatsReporter is not initialized yet")
-	}
-
+func (r *reporter) report(ctx context.Context, m stats.Measurement) error {
 	metrics.Record(ctx, m)
 	return nil
 }

@@ -227,12 +227,14 @@ func (am *AuditManager) writeAuditResults(ctx context.Context, resourceList *met
 			return err
 		}
 		log.Info("constraint", "count of constraints", len(instanceList.Items))
+
 		updateConstraints := make(map[string]unstructured.Unstructured, len(instanceList.Items))
 		// get each constraint
 		for _, item := range instanceList.Items {
 			updateConstraints[item.GetSelfLink()] = item
 
-			am.reporter.ReportTotalViolations(item.GetSelfLink(), totalViolations[item.GetSelfLink()])
+			am.reporter.ReportTotalViolations(item.GetKind(), item.GetName(), totalViolations[item.GetSelfLink()])
+			am.reporter.ReportConstraints(item.GetKind(), item.GetName(), int64(len(instanceList.Items)))
 		}
 
 		if len(updateConstraints) > 0 {
@@ -287,10 +289,6 @@ func (ucloop *updateConstraintLoop) updateConstraintStatus(ctx context.Context, 
 	unstructured.SetNestedField(instance.Object, timestamp, "status", "auditTimestamp")
 	// update constraint status totalViolations
 	unstructured.SetNestedField(instance.Object, totalViolations, "status", "totalViolations")
-
-	// mCtx, _ := tag.New(context.Background(), tag.Insert(metrics.KeyMethod, "audit"))
-	// stats.Record(mCtx, util.TotalViolations.M(totalViolations))
-	// metrics.Record(mCtx, metrics.TotalViolationsStat.M(totalViolations))
 
 	// update constraint status violations
 	if len(violations) == 0 {
