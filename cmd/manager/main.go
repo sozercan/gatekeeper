@@ -21,8 +21,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
-
 	"github.com/go-logr/zapr"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
@@ -31,6 +29,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/pkg/controller"
 	configController "github.com/open-policy-agent/gatekeeper/pkg/controller/config"
 	"github.com/open-policy-agent/gatekeeper/pkg/controller/constrainttemplate"
+	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/pkg/upgrade"
 	"github.com/open-policy-agent/gatekeeper/pkg/watch"

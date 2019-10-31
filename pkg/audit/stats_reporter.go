@@ -29,23 +29,18 @@ func init() {
 }
 
 func register() {
-	tagKeys := []tag.Key{
-		methodTypeKey,
-		constraintKindKey,
-		constraintNameKey}
-
 	views := []*view.View{
 		{
 			Name:        totalViolationsName,
 			Measure:     violationsTotalM,
 			Aggregation: view.LastValue(),
-			TagKeys:     tagKeys,
+			TagKeys:     []tag.Key{methodTypeKey, constraintKindKey, constraintNameKey},
 		},
 		{
 			Name:        constraintsTotalName,
 			Measure:     constraintsTotalM,
-			Aggregation: view.Count(),
-			TagKeys:     tagKeys,
+			Aggregation: view.LastValue(),
+			TagKeys:     []tag.Key{methodTypeKey, constraintKindKey},
 		},
 	}
 
@@ -67,12 +62,11 @@ func (r *reporter) ReportTotalViolations(constraintKind, constraintName string, 
 	return r.report(ctx, violationsTotalM.M(v))
 }
 
-func (r *reporter) ReportConstraints(constraintKind, constraintName string, v int64) error {
+func (r *reporter) ReportConstraints(constraintKind string, v int64) error {
 	ctx, err := tag.New(
 		r.ctx,
 		tag.Insert(methodTypeKey, methodType),
-		tag.Insert(constraintKindKey, constraintKind),
-		tag.Insert(constraintNameKey, constraintName))
+		tag.Insert(constraintKindKey, constraintKind))
 	if err != nil {
 		return err
 	}
@@ -83,7 +77,7 @@ func (r *reporter) ReportConstraints(constraintKind, constraintName string, v in
 // StatsReporter reports audit metrics
 type StatsReporter interface {
 	ReportTotalViolations(constraintKind, constraintName string, v int64) error
-	ReportConstraints(constraintKind, constraintName string, v int64) error
+	ReportConstraints(constraintKind string, v int64) error
 }
 
 // NewStatsReporter creaters a reporter for audit metrics

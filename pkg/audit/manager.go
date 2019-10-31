@@ -234,7 +234,7 @@ func (am *AuditManager) writeAuditResults(ctx context.Context, resourceList *met
 			updateConstraints[item.GetSelfLink()] = item
 
 			am.reporter.ReportTotalViolations(item.GetKind(), item.GetName(), totalViolations[item.GetSelfLink()])
-			am.reporter.ReportConstraints(item.GetKind(), item.GetName(), int64(len(instanceList.Items)))
+			am.reporter.ReportConstraints(item.GetKind(), int64(len(instanceList.Items)))
 		}
 
 		if len(updateConstraints) > 0 {
