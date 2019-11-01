@@ -120,20 +120,24 @@ func AddPolicyWebhook(mgr manager.Manager, opa *opa.Client) error {
 var _ admission.Handler = &validationHandler{}
 
 type validationHandler struct {
-	opa    *opa.Client
-	client client.Client
+	opa      *opa.Client
+	client   client.Client
+	reporter StatsReporter
 
 	// for testing
 	injectedConfig *v1alpha1.Config
-
-	reporter StatsReporter
 }
 
 // Handle the validation request
 func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atypes.Response {
 	log := log.WithValues("hookType", "validation")
 
-	var ttStart = time.Now()
+	var timeStart = time.Now()
+	reporter, err := NewStatsReporter()
+	if err != nil {
+		log.Error(err, "StatsReporter could not start")
+	}
+	h.reporter = reporter
 
 	if isGkServiceAccount(req.AdmissionRequest.UserInfo) {
 		return admission.ValidationResponse(true, "Gatekeeper does not self-manage")
@@ -170,12 +174,6 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 		return vResp
 	}
 
-	reporter, err := NewStatsReporter()
-	h.reporter = reporter
-	if err != nil {
-		log.Error(err, "statsreporter could not start")
-	}
-
 	resp, err := h.reviewRequest(ctx, req)
 	if err != nil {
 		log.Error(err, "error executing query")
@@ -186,7 +184,7 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 
 		if h.reporter != nil {
 			// Only report valid requests
-			h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(ttStart))
+			h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(timeStart))
 		}
 
 		vResp.Response.Result.Code = http.StatusInternalServerError
@@ -209,7 +207,7 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 
 			if h.reporter != nil {
 				// Only report valid requests
-				h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(ttStart))
+				h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(timeStart))
 			}
 
 			vResp.Response.Result.Code = http.StatusForbidden
@@ -221,7 +219,7 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 
 	if h.reporter != nil {
 		// Only report valid requests
-		h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(ttStart))
+		h.reporter.ReportRequest(req.AdmissionRequest, vResp.Response, time.Since(timeStart))
 	}
 
 	return vResp

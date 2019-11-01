@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"time"
 
 	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
 	"go.opencensus.io/stats"
@@ -12,12 +13,14 @@ import (
 const (
 	totalViolationsName  = "violations_total"
 	constraintsTotalName = "constraints_total"
+	auditLatency         = "audit_latency"
 	methodType           = "audit"
 )
 
 var (
 	violationsTotalM  = stats.Int64(totalViolationsName, "Total number of violations per constraint", stats.UnitNone)
 	constraintsTotalM = stats.Int64(constraintsTotalName, "Total number of enforced constraints", stats.UnitNone)
+	auditLatencyM     = stats.Float64(auditLatency, "Latency of audit operation", stats.UnitMilliseconds)
 
 	methodTypeKey     = tag.MustNewKey("method_type")
 	constraintKindKey = tag.MustNewKey("constraint_kind")
@@ -41,6 +44,12 @@ func register() {
 			Measure:     constraintsTotalM,
 			Aggregation: view.LastValue(),
 			TagKeys:     []tag.Key{methodTypeKey, constraintKindKey},
+		},
+		{
+			Name:        auditLatency,
+			Measure:     auditLatencyM,
+			Aggregation: view.Distribution(10, 100, 1000, 10000, 30000, 60000),
+			TagKeys:     []tag.Key{methodTypeKey},
 		},
 	}
 
@@ -74,10 +83,23 @@ func (r *reporter) ReportConstraints(constraintKind string, v int64) error {
 	return r.report(ctx, constraintsTotalM.M(v))
 }
 
+func (r *reporter) ReportLatency(d time.Duration) error {
+	ctx, err := tag.New(
+		r.ctx,
+		tag.Insert(methodTypeKey, methodType))
+	if err != nil {
+		return err
+	}
+
+	// Convert time.Duration in nanoseconds to milliseconds
+	return r.report(ctx, auditLatencyM.M(float64(d/time.Millisecond)))
+}
+
 // StatsReporter reports audit metrics
 type StatsReporter interface {
 	ReportTotalViolations(constraintKind, constraintName string, v int64) error
 	ReportConstraints(constraintKind string, v int64) error
+	ReportLatency(d time.Duration) error
 }
 
 // NewStatsReporter creaters a reporter for audit metrics

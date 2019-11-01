@@ -73,6 +73,7 @@ type StatusViolation struct {
 func New(ctx context.Context, cfg *rest.Config, opa *opa.Client) (*AuditManager, error) {
 	reporter, err := NewStatsReporter()
 	if err != nil {
+		log.Error(err, "StatsReporter could not start")
 		return nil, err
 	}
 
@@ -89,7 +90,8 @@ func New(ctx context.Context, cfg *rest.Config, opa *opa.Client) (*AuditManager,
 
 // audit performs an audit then updates the status of all constraint resources with the results
 func (am *AuditManager) audit(ctx context.Context) error {
-	timestamp := time.Now().UTC().Format(time.RFC3339)
+	timeStart := time.Now()
+	timestamp := timeStart.UTC().Format(time.RFC3339)
 	// new client to get updated restmapper
 	c, err := client.New(am.cfg, client.Options{Scheme: nil, Mapper: nil})
 	if err != nil {
@@ -105,6 +107,10 @@ func (am *AuditManager) audit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// record audit latency
+	am.reporter.ReportLatency(time.Since(timeStart))
+
 	log.Info("Audit opa.Audit() audit results", "violations", len(resp.Results()))
 	// get updatedLists
 	updateLists := make(map[string][]auditResult)
@@ -233,6 +239,7 @@ func (am *AuditManager) writeAuditResults(ctx context.Context, resourceList *met
 		for _, item := range instanceList.Items {
 			updateConstraints[item.GetSelfLink()] = item
 
+			// report total violations and constraint counts
 			am.reporter.ReportTotalViolations(item.GetKind(), item.GetName(), totalViolations[item.GetSelfLink()])
 			am.reporter.ReportConstraints(item.GetKind(), int64(len(instanceList.Items)))
 		}
