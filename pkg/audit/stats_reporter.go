@@ -48,7 +48,7 @@ func register() {
 		{
 			Name:        auditLatency,
 			Measure:     auditLatencyM,
-			Aggregation: view.Distribution(10, 100, 1000, 10000, 30000, 60000),
+			Aggregation: view.Distribution(metrics.Buckets125(1, 100000)...),
 			TagKeys:     []tag.Key{methodTypeKey},
 		},
 	}
