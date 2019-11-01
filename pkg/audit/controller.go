@@ -20,8 +20,8 @@ import (
 )
 
 // AddToManager adds audit manager to the Manager
-func AddToManager(m manager.Manager, opa *opa.Client, reporter StatsReporter) error {
-	am, err := New(context.Background(), m.GetConfig(), opa, reporter)
+func AddToManager(m manager.Manager, opa *opa.Client) error {
+	am, err := New(context.Background(), m.GetConfig(), opa)
 	if err != nil {
 		return err
 	}

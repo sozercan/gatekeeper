@@ -69,11 +69,12 @@ func main() {
 	}
 	metrics.SetCurMetricsExporter(e)
 
-	reporter, err := metrics.NewStatsReporter()
-	if err != nil {
-		log.Error(err, "unable to set up StatsReporter")
-		os.Exit(1)
-	}
+	// reporter, err := NewStatsReporter()
+	// if err != nil {
+	// 	log.Error(err, "unable to set up statsreporter")
+	// 	os.Exit(1)
+	// }
+	// TODO(sertac): pass reporter
 
 	// Get a config to talk to the apiserver
 	log.Info("setting up client for manager")
@@ -123,13 +124,13 @@ func main() {
 	}
 
 	log.Info("setting up webhooks")
-	if err := webhook.AddToManager(mgr, client, reporter); err != nil {
+	if err := webhook.AddToManager(mgr, client); err != nil {
 		log.Error(err, "unable to register webhooks to the manager")
 		os.Exit(1)
 	}
 
 	log.Info("setting up audit")
-	if err := audit.AddToManager(mgr, client, reporter); err != nil {
+	if err := audit.AddToManager(mgr, client); err != nil {
 		log.Error(err, "unable to register audit to the manager")
 		os.Exit(1)
 	}

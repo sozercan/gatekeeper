@@ -48,19 +48,32 @@ func init() {
 	register()
 }
 
-type reporter struct {
-	*metrics.Reporter
-}
-
 // StatsReporter reports webhook metrics
 type StatsReporter interface {
 	ReportRequest(request *admissionv1beta1.AdmissionRequest, response *admissionv1beta1.AdmissionResponse, d time.Duration) error
 }
 
+// reporter implements StatsReporter interface
+type reporter struct {
+	ctx context.Context
+}
+
+// NewStatsReporter creaters a reporter for webhook metrics
+func NewStatsReporter() (StatsReporter, error) {
+	ctx, err := tag.New(
+		context.Background(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &reporter{ctx: ctx}, nil
+}
+
 // Captures req count metric, recording the count and the duration
 func (r *reporter) ReportRequest(req *admissionv1beta1.AdmissionRequest, resp *admissionv1beta1.AdmissionResponse, d time.Duration) error {
 	ctx, err := tag.New(
-		r.Ctx,
+		r.ctx,
 		tag.Insert(requestOperationKey, string(req.Operation)),
 		tag.Insert(kindGroupKey, req.Kind.Group),
 		tag.Insert(kindVersionKey, req.Kind.Version),

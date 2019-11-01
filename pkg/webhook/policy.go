@@ -59,7 +59,7 @@ var supportedEnforcementActions = []string{
 // below: notations add permissions kube-mgmt needs. Access cannot yet be restricted on a namespace-level granularity
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
 // +kubebuilder:rbac:groups=,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-func AddPolicyWebhook(mgr manager.Manager, opa *opa.Client, reporter StatsReporter) error {
+func AddPolicyWebhook(mgr manager.Manager, opa *opa.Client) error {
 	validatingWh, err := builder.NewWebhookBuilder().
 		Validating().
 		Name(*webhookName).
@@ -72,7 +72,7 @@ func AddPolicyWebhook(mgr manager.Manager, opa *opa.Client, reporter StatsReport
 				Resources:   []string{"*"},
 			},
 		}).
-		Handlers(&validationHandler{opa: opa, client: mgr.GetClient(), reporter: reporter}).
+		Handlers(&validationHandler{opa: opa, client: mgr.GetClient()}).
 		WithManager(mgr).
 		Build()
 	if err != nil {
@@ -120,12 +120,13 @@ func AddPolicyWebhook(mgr manager.Manager, opa *opa.Client, reporter StatsReport
 var _ admission.Handler = &validationHandler{}
 
 type validationHandler struct {
-	opa      *opa.Client
-	client   client.Client
-	reporter StatsReporter
+	opa    *opa.Client
+	client client.Client
 
 	// for testing
 	injectedConfig *v1alpha1.Config
+
+	reporter StatsReporter
 }
 
 // Handle the validation request
@@ -169,11 +170,11 @@ func (h *validationHandler) Handle(ctx context.Context, req atypes.Request) atyp
 		return vResp
 	}
 
-	// reporter, err := NewStatsReporter()
-	// h.reporter = reporter
-	// if err != nil {
-	// 	log.Error(err, "statsreporter could not start")
-	// }
+	reporter, err := NewStatsReporter()
+	h.reporter = reporter
+	if err != nil {
+		log.Error(err, "statsreporter could not start")
+	}
 
 	resp, err := h.reviewRequest(ctx, req)
 	if err != nil {
