@@ -70,12 +70,7 @@ type StatusViolation struct {
 }
 
 // New creates a new manager for audit
-func New(ctx context.Context, cfg *rest.Config, opa *opa.Client) (*AuditManager, error) {
-	reporter, err := NewStatsReporter()
-	if err != nil {
-		return nil, err
-	}
-
+func New(ctx context.Context, cfg *rest.Config, opa *opa.Client, reporter StatsReporter) (*AuditManager, error) {
 	am := &AuditManager{
 		opa:      opa,
 		stopper:  make(chan struct{}),

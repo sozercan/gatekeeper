@@ -51,7 +51,7 @@ func register() {
 
 func (r *reporter) ReportTotalViolations(constraintKind, constraintName string, v int64) error {
 	ctx, err := tag.New(
-		r.ctx,
+		r.Ctx,
 		tag.Insert(methodTypeKey, methodType),
 		tag.Insert(constraintKindKey, constraintKind),
 		tag.Insert(constraintNameKey, constraintName))
@@ -64,7 +64,7 @@ func (r *reporter) ReportTotalViolations(constraintKind, constraintName string, 
 
 func (r *reporter) ReportConstraints(constraintKind string, v int64) error {
 	ctx, err := tag.New(
-		r.ctx,
+		r.Ctx,
 		tag.Insert(methodTypeKey, methodType),
 		tag.Insert(constraintKindKey, constraintKind))
 	if err != nil {
@@ -80,23 +80,11 @@ type StatsReporter interface {
 	ReportConstraints(constraintKind string, v int64) error
 }
 
-// NewStatsReporter creaters a reporter for audit metrics
-func NewStatsReporter() (StatsReporter, error) {
-	ctx, err := tag.New(
-		context.Background(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return &reporter{ctx: ctx}, nil
-}
-
-type reporter struct {
-	ctx context.Context
-}
-
 func (r *reporter) report(ctx context.Context, m stats.Measurement) error {
 	metrics.Record(ctx, m)
 	return nil
+}
+
+type reporter struct {
+	*metrics.Reporter
 }
