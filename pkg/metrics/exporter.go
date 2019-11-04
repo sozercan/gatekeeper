@@ -1,7 +1,9 @@
 package metrics
 
 import (
+	"flag"
 	"fmt"
+	"strings"
 	"sync"
 
 	"go.opencensus.io/stats/view"
@@ -9,16 +11,17 @@ import (
 
 var (
 	curMetricsExporter view.Exporter
-	curMetricsConfig   *metricsConfig
 	metricsMux         sync.RWMutex
 )
 
-func NewMetricsExporter() (view.Exporter, error) {
-	config, err := createMetricsConfig()
-	if err != nil {
-		return nil, err
-	}
+var (
+	metricsBackend = flag.String("metricsBackend", "Prometheus", "Backend used for metrics")
+	prometheusPort = flag.Int("prometheusPort", 9090, "Prometheus port")
+)
 
+const prometheusExporter = "prometheus"
+
+func NewMetricsExporter() (view.Exporter, error) {
 	ce := getCurMetricsExporter()
 	// If there is a Prometheus Exporter server running, stop it.
 	resetCurPromSrv()
@@ -29,11 +32,14 @@ func NewMetricsExporter() (view.Exporter, error) {
 		view.UnregisterExporter(ce)
 	}
 	var e view.Exporter
-	switch config.backendDestination {
-	case Prometheus:
-		e, err = newPrometheusExporter(config)
+	var err error
+	m := strings.ToLower(*metricsBackend)
+	switch m {
+	// Prometheus is the only exporter for now
+	case prometheusExporter:
+		e, err = newPrometheusExporter()
 	default:
-		err = fmt.Errorf("unsupported metrics backend %v", config.backendDestination)
+		err = fmt.Errorf("unsupported metrics backend %v", *metricsBackend)
 	}
 	if err != nil {
 		return nil, err
