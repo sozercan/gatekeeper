@@ -23,29 +23,37 @@ spec:
         control-plane: controller-manager
     spec:
       containers:
-      - command:
-        - /manager
-        args:
-          - "--auditInterval=30"
-          - "--port=8443"
-        image: quay.io/open-policy-agent/gatekeeper:v3.0.4-beta.2
-        imagePullPolicy: Always
-        name: manager
-        env:
-          - name: POD_NAMESPACE
-            valueFrom:
-              fieldRef:
-                apiVersion: v1
-                fieldPath: metadata.namespace
-          - name: POD_NAME
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.name
-        resources:
-          limits:
-            cpu: 100m
-            memory: 512Mi
-          requests:
-            cpu: 100m
-            memory: 256Mi
+        - command:
+            - /manager
+          args:
+            - "--auditInterval=30"
+            - "--port=8443"
+          image: quay.io/open-policy-agent/gatekeeper:v3.0.4-beta.2
+          imagePullPolicy: Always
+          name: manager
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            limits:
+              cpu: 100m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
       terminationGracePeriodSeconds: 60
