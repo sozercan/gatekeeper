@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
@@ -40,6 +41,14 @@ var _ manager.Manager = &fakeMgr{}
 type fakeMgr struct{}
 
 func (m *fakeMgr) Add(runnable manager.Runnable) error {
+	return nil
+}
+
+func (m *fakeMgr) AddHealthzCheck(name string, check healthz.Checker) error {
+	return nil
+}
+
+func (m *fakeMgr) AddReadyzCheck(name string, check healthz.Checker) error {
 	return nil
 }
 
