@@ -18,7 +18,6 @@ package main
 import (
 	"context"
 	"flag"
-	"net/http"
 	"os"
 	"time"
 
@@ -42,6 +41,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	ctrl "sigs.k8s.io/controller-runtime"
 	k8sCli "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	// +kubebuilder:scaffold:imports
 )
@@ -138,11 +138,11 @@ func main() {
 
 	// +kubebuilder:scaffold:builder
 
-	if err := mgr.AddHealthzCheck("default", func(_ *http.Request) error { return nil }); err != nil {
+	if err := mgr.AddHealthzCheck("default", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to create health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("default", func(_ *http.Request) error { return nil }); err != nil {
+	if err := mgr.AddReadyzCheck("default", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to create ready check")
 		os.Exit(1)
 	}
