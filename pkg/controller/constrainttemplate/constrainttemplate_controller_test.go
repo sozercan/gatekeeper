@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,7 +42,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -82,8 +85,16 @@ violation[{"msg": "denied!"}] {
 
 	// Setup the Manager and Controller.  Wrap the Controller Reconcile function so it writes each request to a
 	// channel when it is finished.
+	ctrl.SetLogger(zap.Logger(true))
 	mgr, err := manager.New(cfg, manager.Options{MetricsBindAddress: "0"})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+	wm, err := watch.New(mgr.GetConfig())
+	if err != nil {
+		t.Fatalf("could not create watch manager: %s", err)
+	}
+	if err := mgr.Add(wm); err != nil {
+		t.Fatalf("could not add watch manager to manager: %s", err)
+	}
 	c = mgr.GetClient()
 
 	// initialize OPA
@@ -98,18 +109,20 @@ violation[{"msg": "denied!"}] {
 		t.Fatalf("unable to set up OPA client: %s", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	rec, _ := newReconciler(mgr, opa, watch.New(ctx, mgr.GetConfig()))
+	rec, _ := newReconciler(mgr, opa, wm)
 	recFn, requests := SetupTestReconcile(rec)
 	g.Expect(add(mgr, recFn)).NotTo(gomega.HaveOccurred())
 
 	stopMgr, mgrStopped := StartTestManager(mgr, g)
+	once := sync.Once{}
+	testMgrStopped := func() {
+		once.Do(func() {
+			close(stopMgr)
+			mgrStopped.Wait()
+		})
+	}
 
-	defer func() {
-		close(stopMgr)
-		mgrStopped.Wait()
-	}()
+	defer testMgrStopped()
 
 	// Create the ConstraintTemplate object and expect the CRD to be created
 	err = c.Create(context.TODO(), instance)
@@ -267,21 +280,27 @@ anyrule[}}}//invalid//rego
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(constraint.HasFinalizer(origCstr)).Should(gomega.BeTrue())
 
-	cancel()
+	testMgrStopped()
+	if err := wm.Pause(); err != nil {
+		t.Fatalf("unable to pause watch manager: %s", err)
+	}
 	time.Sleep(5 * time.Second)
 	finished := make(chan struct{})
 	newCli, err := client.New(mgr.GetConfig(), client.Options{})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	RemoveAllFinalizers(newCli, finished)
+	TearDownState(newCli, finished)
 	<-finished
 
 	g.Eventually(func() error {
 		obj := &v1beta1.ConstraintTemplate{}
-		if err := c.Get(context.TODO(), types.NamespacedName{Name: "denyall"}, obj); err != nil {
+		if err := newCli.Get(context.TODO(), types.NamespacedName{Name: "denyall"}, obj); err != nil {
 			return err
 		}
 		if containsString(finalizerName, obj.GetFinalizers()) {
 			return errors.New("denyall constraint template still has finalizer")
+		}
+		if len(obj.Status.ByPod) != 0 {
+			return errors.New("denyall constraint template still has pod-specific status")
 		}
 		return nil
 	}, timeout).Should(gomega.BeNil())
@@ -293,6 +312,16 @@ anyrule[}}}//invalid//rego
 		}
 		if constraint.HasFinalizer(cleanCstr) {
 			return errors.New("denyall constraint still has finalizer")
+		}
+		s, exists, err := unstructured.NestedSlice(cleanCstr.Object, "status", "byPod")
+		if err != nil {
+			return fmt.Errorf("unstructured access error: %v", err)
+		}
+		if !exists {
+			return nil
+		}
+		if len(s) != 0 {
+			return fmt.Errorf("byPod status is not empty: %v", s)
 		}
 		return nil
 	}, timeout).Should(gomega.BeNil())

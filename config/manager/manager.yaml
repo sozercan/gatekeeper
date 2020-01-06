@@ -28,9 +28,14 @@ spec:
         args:
           - "--auditInterval=30"
           - "--port=8443"
-        image: quay.io/open-policy-agent/gatekeeper:v3.0.4-beta.2
+          - "--logtostderr"
+        image: quay.io/open-policy-agent/gatekeeper:v3.1.0-beta.2
         imagePullPolicy: Always
         name: manager
+        ports:
+        - containerPort: 8888
+          name: metrics
+          protocol: TCP
         env:
           - name: POD_NAMESPACE
             valueFrom:
@@ -60,4 +65,9 @@ spec:
           httpGet:
             path: /readyz
             port: 9090
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 999
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
       terminationGracePeriodSeconds: 60

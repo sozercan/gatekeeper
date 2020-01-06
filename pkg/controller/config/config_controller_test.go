@@ -18,6 +18,7 @@ package config
 import (
 	"errors"
 	"sort"
+	gosync "sync"
 	"testing"
 	"time"
 
@@ -25,7 +26,6 @@ import (
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
 	configv1alpha1 "github.com/open-policy-agent/gatekeeper/api/v1alpha1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/sync"
 	"github.com/open-policy-agent/gatekeeper/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/pkg/watch"
 	"golang.org/x/net/context"
@@ -33,7 +33,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -64,10 +66,20 @@ func TestReconcile(t *testing.T) {
 		},
 	}
 
+	ctrl.SetLogger(zap.Logger(true))
+
 	// Setup the Manager and Controller.  Wrap the Controller Reconcile function so it writes each request to a
 	// channel when it is finished.
+	ctrl.SetLogger(zap.Logger(true))
 	mgr, err := manager.New(cfg, manager.Options{MetricsBindAddress: "0"})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+	watcher, err := watch.New(mgr.GetConfig())
+	if err != nil {
+		t.Fatalf("could not create watch manager: %s", err)
+	}
+	if err := mgr.Add(watcher); err != nil {
+		t.Fatalf("could not add watch manager to manager: %s", err)
+	}
 	c = mgr.GetClient()
 
 	// initialize OPA
@@ -82,19 +94,20 @@ func TestReconcile(t *testing.T) {
 		t.Fatalf("unable to set up OPA client: %s", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	watcher := watch.New(ctx, mgr.GetConfig())
 	rec, _ := newReconciler(mgr, opa, watcher)
 	recFn, requests := SetupTestReconcile(rec)
 	g.Expect(add(mgr, recFn)).NotTo(gomega.HaveOccurred())
 
 	stopMgr, mgrStopped := StartTestManager(mgr, g)
+	once := gosync.Once{}
+	testMgrStopped := func() {
+		once.Do(func() {
+			close(stopMgr)
+			mgrStopped.Wait()
+		})
+	}
 
-	defer func() {
-		close(stopMgr)
-		mgrStopped.Wait()
-	}()
+	defer testMgrStopped()
 
 	// Create the Config object and expect the Reconcile to be created
 	err = c.Create(context.TODO(), instance)
@@ -124,34 +137,26 @@ func TestReconcile(t *testing.T) {
 	g.Expect(c.Create(context.TODO(), ns)).NotTo(gomega.HaveOccurred())
 
 	// Test finalizer removal
+
 	orig := &configv1alpha1.Config{}
 	g.Expect(c.Get(context.TODO(), CfgKey, orig)).NotTo(gomega.HaveOccurred())
 	g.Expect(hasFinalizer(orig)).Should(gomega.BeTrue())
 
-	g.Eventually(func() error {
-		ns := &unstructured.Unstructured{}
-		ns.SetGroupVersionKind(nsGvk)
-		if err := c.Get(context.Background(), types.NamespacedName{Name: "testns"}, ns); err != nil {
-			return err
-		}
-		if !sync.HasFinalizer(ns) {
-			return errors.New("namespace has no sync finalizer")
-		}
-		return nil
-	}, timeout).Should(gomega.BeNil())
-
-	cancel()
+	testMgrStopped()
+	if err := watcher.Pause(); err != nil {
+		t.Fatalf("unable to pause watch manager: %s", err)
+	}
 	time.Sleep(1 * time.Second)
 	finished := make(chan struct{})
 	newCli, err := client.New(mgr.GetConfig(), client.Options{})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	RemoveAllConfigFinalizers(newCli, finished)
+	TearDownState(newCli, finished)
 	<-finished
 	time.Sleep(1 * time.Second)
 
 	g.Eventually(func() error {
 		obj := &configv1alpha1.Config{}
-		if err := c.Get(context.TODO(), CfgKey, obj); err != nil {
+		if err := newCli.Get(context.TODO(), CfgKey, obj); err != nil {
 			return err
 		}
 		if hasFinalizer(obj) {
@@ -159,16 +164,4 @@ func TestReconcile(t *testing.T) {
 		}
 		return nil
 	}, timeout).Should(gomega.BeNil())
-
-	g.Eventually(func() error {
-		cleanNs := &unstructured.Unstructured{}
-		if err := c.Get(context.Background(), types.NamespacedName{Name: "testns"}, ns); err != nil {
-			return err
-		}
-		if sync.HasFinalizer(cleanNs) {
-			return errors.New("testns namespace still has sync finalizer")
-		}
-		return nil
-	}, timeout).Should(gomega.BeNil())
-
 }

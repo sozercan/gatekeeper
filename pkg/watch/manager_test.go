@@ -19,17 +19,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
-func newForTest(fn func(*rest.Config) (Discovery, error)) *Manager {
+func newForTest(fn func(*rest.Config) (Discovery, error)) (*Manager, error) {
+	metrics, err := newStatsReporter()
+	if err != nil {
+		return nil, err
+	}
 	wm := &Manager{
 		newMgrFn:     newFakeMgr,
-		stopper:      make(chan struct{}),
+		stopper:      func() {},
 		managedKinds: newRecordKeeper(),
 		watchedKinds: make(map[schema.GroupVersionKind]vitals),
 		cfg:          nil,
 		newDiscovery: fn,
+		metrics:      metrics,
 	}
 	wm.managedKinds.mgr = wm
-	return wm
+	wm.started.Store(false)
+	return wm, nil
 }
 
 func newFakeMgr(wm *Manager) (manager.Manager, error) {
@@ -136,7 +142,7 @@ func makeGvk(k string) schema.GroupVersionKind {
 
 func waitForWatchManagerStart(wm *Manager) bool {
 	for i := 0; i < 10; i++ {
-		if wm.started == true {
+		if wm.started.Load().(bool) == true {
 			return true
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -145,7 +151,10 @@ func waitForWatchManagerStart(wm *Manager) bool {
 }
 
 func TestRegistrar(t *testing.T) {
-	wm := newForTest(newDiscoveryFactory(false, "FooCRD"))
+	wm, err := newForTest(newDiscoveryFactory(false, "FooCRD"))
+	if err != nil {
+		t.Fatalf("Error creating Manager: %s", err)
+	}
 	defer wm.close()
 	reg, err := wm.NewRegistrar("foo", nil)
 	if err != nil {
@@ -412,7 +421,7 @@ func TestRegistrar(t *testing.T) {
 	}
 
 	t.Run("Manager restarts when not started", func(t *testing.T) {
-		wm.started = false
+		wm.started.Store(false)
 		b, err := wm.updateManager()
 		if err != nil {
 			t.Errorf("Could not update manager: %s", err)

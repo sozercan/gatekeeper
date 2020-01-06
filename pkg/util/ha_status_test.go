@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
-	configv1alpha1 "github.com/open-policy-agent/gatekeeper/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -108,65 +107,25 @@ func TestUnstructuredHAStatus(t *testing.T) {
 					t.Errorf("t2: f = %v; wanted %v", f, s)
 				}
 			}
-		})
-	}
-}
-
-func TestCfgAStatus(t *testing.T) {
-	tc := []struct {
-		Name string
-		// One kind per pretend Pod
-		Kinds []configv1alpha1.GVK
-	}{
-		{
-			Name:  "One Status",
-			Kinds: []configv1alpha1.GVK{{Kind: "one_status"}},
-		},
-		{
-			Name:  "Two Statuses",
-			Kinds: []configv1alpha1.GVK{{Kind: "one"}, {Kind: "two"}},
-		},
-		{
-			Name:  "Three Statuses",
-			Kinds: []configv1alpha1.GVK{{Kind: "one"}, {Kind: "two"}, {Kind: "three"}},
-		},
-	}
-	for _, tt := range tc {
-		t.Run(tt.Name, func(t *testing.T) {
-			obj := &configv1alpha1.Config{}
-			for i, k := range tt.Kinds {
+			// Check deletion
+			for i := range tt.Statuses {
 				pod := fmt.Sprintf("Pod%d", i)
 				if err := os.Setenv("POD_NAME", pod); err != nil {
 					t.Fatal(err)
 				}
-				st := GetCfgHAStatus(obj)
-				ks := []configv1alpha1.GVK{k}
-				st.AllFinalizers = ks
-				SetCfgHAStatus(obj, st)
-				st2 := GetCfgHAStatus(obj)
-				if st2.ID != pod {
-					t.Errorf("id = %v; want %v", st2.ID, pod)
+				if err := DeleteHAStatus(obj); err != nil {
+					t.Errorf("could not delete status: %s", err)
 				}
-				if !reflect.DeepEqual(st2.AllFinalizers, ks) {
-					t.Errorf("st2.AllFinalizers = %v; wanted %v", st2.AllFinalizers, ks)
+				statuses, exists, err := unstructured.NestedSlice(obj.Object, "status", "byPod")
+				if err != nil {
+					t.Errorf("error while getting byPod: %v", err)
 				}
-			}
-			if len(obj.Status.ByPod) != len(tt.Kinds) {
-				t.Errorf("len(obj.Status.ByPod) = %d; want %d", len(obj.Status.ByPod), len(tt.Kinds))
-			}
-			// Check for no overwrites
-			for i, k := range tt.Kinds {
-				pod := fmt.Sprintf("Pod%d", i)
-				if err := os.Setenv("POD_NAME", pod); err != nil {
-					t.Fatal(err)
+				if !exists {
+					t.Errorf("byPod does not exist")
 				}
-				ks := []configv1alpha1.GVK{k}
-				st2 := GetCfgHAStatus(obj)
-				if st2.ID != pod {
-					t.Errorf("t2: id = %v; want %v", st2.ID, pod)
-				}
-				if !reflect.DeepEqual(st2.AllFinalizers, ks) {
-					t.Errorf("t2: st2.AllFinalizers = %v; wanted %v", st2.AllFinalizers, ks)
+				expected := len(tt.Statuses) - i - 1
+				if len(statuses) != expected {
+					t.Errorf("len(statuses) = %d; want %d", len(statuses), expected)
 				}
 			}
 		})
@@ -228,6 +187,18 @@ func TestCTHAStatus(t *testing.T) {
 				}
 				if !reflect.DeepEqual(st2.Errors, es) {
 					t.Errorf("t2: st2.Errors = %v; wanted %v", st2.Errors, es)
+				}
+			}
+			// Check deletion
+			for i := range tt.Errors {
+				pod := fmt.Sprintf("Pod%d", i)
+				if err := os.Setenv("POD_NAME", pod); err != nil {
+					t.Fatal(err)
+				}
+				DeleteCTHAStatus(obj)
+				expected := len(tt.Errors) - i - 1
+				if len(obj.Status.ByPod) != expected {
+					t.Errorf("len(statuses) = %d; want %d", len(obj.Status.ByPod), expected)
 				}
 			}
 		})

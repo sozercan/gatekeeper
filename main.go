@@ -16,7 +16,6 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"flag"
 	"os"
 	"time"
@@ -30,6 +29,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/pkg/controller"
 	configController "github.com/open-policy-agent/gatekeeper/pkg/controller/config"
 	"github.com/open-policy-agent/gatekeeper/pkg/controller/constrainttemplate"
+	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/pkg/upgrade"
 	"github.com/open-policy-agent/gatekeeper/pkg/watch"
@@ -108,8 +108,15 @@ func main() {
 		setupLog.Error(err, "unable to set up OPA client")
 	}
 
-	wmCtx, wmCancel := context.WithCancel(context.Background())
-	wm := watch.New(wmCtx, mgr.GetConfig())
+	wm, err := watch.New(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create watch manager")
+		os.Exit(1)
+	}
+	if err := mgr.Add(wm); err != nil {
+		setupLog.Error(err, "unable to register watch manager to the manager")
+		os.Exit(1)
+	}
 
 	// Setup all Controllers
 	setupLog.Info("Setting up controller")
@@ -136,6 +143,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	setupLog.Info("setting up metrics")
+	if err := metrics.AddToManager(mgr); err != nil {
+		setupLog.Error(err, "unable to register metrics to the manager")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("default", healthz.Ping); err != nil {
@@ -153,7 +166,12 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		hadError = true
 	}
-	wmCancel()
+
+	// wm.Pause() blocks until the watch manager has stopped and ensures it does
+	// not restart
+	if err := wm.Pause(); err != nil {
+		setupLog.Error(err, "could not pause watch manager, attempting cleanup anyway")
+	}
 
 	// Unfortunately there is no way to block until all child
 	// goroutines of the manager have finished, so sleep long
@@ -162,7 +180,7 @@ func main() {
 	time.Sleep(5 * time.Second)
 
 	// Create a fresh client to be sure RESTmapper is up-to-date
-	setupLog.Info("removing finalizers...")
+	setupLog.Info("cleaning state...")
 	cli, err := k8sCli.New(mgr.GetConfig(), k8sCli.Options{Scheme: mgr.GetScheme(), Mapper: nil})
 	if err != nil {
 		setupLog.Error(err, "unable to create cleanup client")
@@ -172,15 +190,15 @@ func main() {
 	// Clean up sync finalizers
 	// This logic should be disabled if OPA is run as a sidecar
 	syncCleaned := make(chan struct{})
-	go configController.RemoveAllConfigFinalizers(cli, syncCleaned)
+	go configController.TearDownState(cli, syncCleaned)
 
 	// Clean up constraint finalizers
 	templatesCleaned := make(chan struct{})
-	go constrainttemplate.RemoveAllFinalizers(cli, templatesCleaned)
+	go constrainttemplate.TearDownState(cli, templatesCleaned)
 
 	<-syncCleaned
 	<-templatesCleaned
-	setupLog.Info("finalizers removed")
+	setupLog.Info("state cleaned")
 	if hadError {
 		os.Exit(1)
 	}
