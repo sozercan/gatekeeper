@@ -57,7 +57,7 @@ test:
 	cp -r * .staging/test
 	-rm .staging/test/Dockerfile
 	cp test/Dockerfile .staging/test/Dockerfile
-	docker build --pull .staging/test -t gatekeeper-test && docker run -t gatekeeper-test
+	DOCKER_BUILDKIT=1 docker build --pull .staging/test -t gatekeeper-test && docker run -t gatekeeper-test
 
 test-e2e:
 	bats -t test/bats/test.bats
@@ -163,7 +163,7 @@ docker-push-release:  docker-tag-release
 
 # Build the docker image
 docker-build: test
-	docker build --pull . -t ${IMG}
+	DOCKER_BUILDKIT=1 docker build --pull . -t ${IMG}
 
 # Update manager_image_patch.yaml with image tag
 patch-image:
