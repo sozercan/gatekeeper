@@ -7,6 +7,30 @@ on:
     branches:
       - master
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go 1.13
+        uses: actions/setup-go@v2-beta
+        with:
+          go-version: 1.13
+        id: go
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+
+      - name: Install tools
+        run: |
+          GOLANGCILINT_VERSION=1.23.6
+          mkdir -p $HOME/bin
+          echo ::add-path::$HOME/bin
+          curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $HOME/bin v${GOLANGCILINT_VERSION}
+
+      - name: Make lint
+        run: |
+          make lint
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -20,11 +44,15 @@ jobs:
       - name: Check out code into the Go module directory
         uses: actions/checkout@v2
 
-      - name: golangci-lint
-        uses: reviewdog/action-golangci-lint@v1
-        # uses: docker://reviewdog/action-golangci-lint:v1 # pre-build docker image
-        with:
-          github_token: ${{ secrets.github_token }}
+      - name: Bootstrap e2e
+        run: |
+          mkdir -p $HOME/bin
+          echo ::add-path::$HOME/bin
+          make e2e-bootstrap
 
-      - name: setup kind
-        uses: engineerd/setup-kind@v0.3.0
+      - name: Run e2e
+        run: |
+          make e2e-build-load-image IMG=gatekeeper-e2e:latest
+          make deploy IMG=gatekeeper-e2e:latest USE_LOCAL_IMG=true
+          make test-e2e
+          echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system -l control-plane=controller-manager

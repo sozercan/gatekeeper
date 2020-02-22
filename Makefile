@@ -7,8 +7,8 @@ IMG := $(REPOSITORY):latest
 VERSION := v3.1.0-beta.7
 
 USE_LOCAL_IMG ?= false
-KIND_VERSION=0.6.0
-KUSTOMIZE_VERSION=3.0.2
+KIND_VERSION=0.7.0
+KUSTOMIZE_VERSION=3.5.4
 
 BUILD_COMMIT := $(shell ./build/get-build-commit.sh)
 BUILD_TIMESTAMP := $(shell ./build/get-build-timestamp.sh)
@@ -64,11 +64,11 @@ test-e2e:
 
 e2e-bootstrap:
 	# Download and install kind
-	curl -L https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-linux-amd64 --output kind && chmod +x kind && sudo mv kind /usr/local/bin/
+	curl -L https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-linux-amd64 --output ${HOME}/bin/kind && chmod +x ${HOME}/bin/kind
 	# Download and install kubectl
-	curl -LO https://storage.googleapis.com/kubernetes-release/release/$$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl && chmod +x ./kubectl && sudo mv kubectl /usr/local/bin/
+	curl -L https://storage.googleapis.com/kubernetes-release/release/$$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl -o ${HOME}/bin/kubectl && chmod +x ${HOME}/bin/kubectl
 	# Download and install kustomize
-	curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/v${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64 --output kustomize && chmod +x kustomize && sudo mv kustomize /usr/local/bin/
+	curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/v${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64 -o ${HOME}/bin/kustomize && chmod +x ${HOME}/bin/kustomize
 	# Check for existing kind cluster
 	if [ $$(kind get clusters) ]; then kind delete cluster; fi
 	# Create a new kind cluster
