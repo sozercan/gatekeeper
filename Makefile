@@ -69,6 +69,8 @@ e2e-bootstrap:
 	curl -L https://storage.googleapis.com/kubernetes-release/release/$$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl -o ${HOME}/bin/kubectl && chmod +x ${HOME}/bin/kubectl
 	# Download and install kustomize
 	curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/v${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64 -o ${HOME}/bin/kustomize && chmod +x ${HOME}/bin/kustomize
+	# Download and install bats
+	sudo apt install -y bats
 	# Check for existing kind cluster
 	if [ $$(kind get clusters) ]; then kind delete cluster; fi
 	# Create a new kind cluster

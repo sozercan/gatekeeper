@@ -1,4 +1,4 @@
-name: Gatekeeper
+name: e2e
 on:
   push:
     branches:
@@ -8,7 +8,7 @@ on:
       - master
 jobs:
   lint:
-    name: Lint
+    name: "Lint"
     runs-on: ubuntu-latest
     steps:
       - name: Set up Go 1.13
@@ -32,7 +32,7 @@ jobs:
           make lint
 
   build_test:
-    name: Build Test
+    name: "Build and Test"
     runs-on: ubuntu-latest
     steps:
       - name: Set up Go 1.13
@@ -58,7 +58,7 @@ jobs:
           echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system -l control-plane=controller-manager
 
   helm_build_test:
-    name: Helm Build Test
+    name: "[Helm] Build and Test"
     runs-on: ubuntu-latest
     steps:
       - name: Set up Go 1.13
