@@ -8,7 +8,7 @@ VERSION := v3.1.0-beta.7
 
 USE_LOCAL_IMG ?= false
 KIND_VERSION=0.7.0
-KUSTOMIZE_VERSION=3.5.4
+KUSTOMIZE_VERSION=3.0.2
 
 BUILD_COMMIT := $(shell ./build/get-build-commit.sh)
 BUILD_TIMESTAMP := $(shell ./build/get-build-timestamp.sh)
@@ -118,7 +118,7 @@ deploy: patch-image manifests
 # Generate manifests e.g. CRD, RBAC etc.
 manifests: controller-gen
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=manager-role webhook paths="./api/..." paths="./pkg/..." output:crd:artifacts:config=config/crd/bases
-	kustomize build config/default  -o manifest_staging/deploy/gatekeeper.yaml
+	kustomize build config/default -o manifest_staging/deploy/gatekeeper.yaml
 	bash -c 'for x in vendor/${FRAMEWORK_PACKAGE}/deploy/*.yaml ; do echo --- >> manifest_staging/deploy/gatekeeper.yaml ; cat $${x} >> manifest_staging/deploy/gatekeeper.yaml ; done'
 	sh manifest_staging/chart/gatekeeper-operator/generate_helm_template.sh
 

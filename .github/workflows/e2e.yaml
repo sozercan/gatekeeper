@@ -20,7 +20,7 @@ jobs:
       - name: Check out code into the Go module directory
         uses: actions/checkout@v2
 
-      - name: Install tools
+      - name: Install golangci-lint
         run: |
           GOLANGCILINT_VERSION=1.23.6
           mkdir -p $HOME/bin
@@ -31,8 +31,8 @@ jobs:
         run: |
           make lint
 
-  build:
-    name: Build
+  build_test:
+    name: Build Test
     runs-on: ubuntu-latest
     steps:
       - name: Set up Go 1.13
@@ -54,5 +54,31 @@ jobs:
         run: |
           make e2e-build-load-image IMG=gatekeeper-e2e:latest
           make deploy IMG=gatekeeper-e2e:latest USE_LOCAL_IMG=true
+          make test-e2e
+          echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system -l control-plane=controller-manager
+
+  helm_build_test:
+    name: Helm Build Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go 1.13
+        uses: actions/setup-go@v2-beta
+        with:
+          go-version: 1.13
+        id: go
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+
+      - name: Bootstrap e2e
+        run: |
+          mkdir -p $HOME/bin
+          echo ::add-path::$HOME/bin
+          make e2e-bootstrap
+
+      - name: Run e2e
+        run: |
+          make e2e-build-load-image IMG=gatekeeper-e2e:latest
+          make e2e-helm-deploy HELM_REPO=gatekeeper-e2e HELM_RELEASE=latest
           make test-e2e
           echo -e '\n\n======= manager logs =======\n\n' && kubectl logs -n gatekeeper-system -l control-plane=controller-manager
