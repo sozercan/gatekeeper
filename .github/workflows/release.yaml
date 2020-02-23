@@ -1,11 +1,29 @@
-name: Release
+name: "tagged-release"
+
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
+
 jobs:
-  release:
-    name: "Release"
-    runs-on: ubuntu-latest
+  tagged-release:
+    name: "Tagged Release"
+    runs-on: "ubuntu-latest"
+
     steps:
-      - name: release
-        run: echo test
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+
+      - name: Get the version
+        id: get_version
+        run: echo ::set-env name=VERSION::${GITHUB_REF#refs/tags/}
+
+      - name: m66ake docker-push-release
+        run: |
+          make docker-build IMG=gatekeeper:${VERSION}
+          make docker-push-release IMG=gatekeeper:${VERSION}
+
+      - uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          prerelease: false
