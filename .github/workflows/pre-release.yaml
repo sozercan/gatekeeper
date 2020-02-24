@@ -22,17 +22,8 @@ jobs:
         env:
           DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          REGISTRY: docker.io/sozercan
           IMG: gatekeeper:${GITHUB_SHA}
-          REPOSITORY: sozercan/gatekeeper
           DEV_TAG: ${GITHUB_SHA}
-
-      - uses: mr-smithers-excellent/docker-build-push@v2
-        with:
-          image: sozercan/open-policy-agent/gatekeeper
-          registry: docker.io
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
