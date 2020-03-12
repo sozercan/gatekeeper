@@ -18,10 +18,10 @@ jobs:
         id: get_version
         run: echo ::set-env name=VERSION::${GITHUB_REF#refs/tags/}
 
-      - name: make docker-push-release
+      - name: tag release
         run: |
+          TAG=$(git rev-list -1 ${VERSION})
           make docker-login
-          make docker-build IMG=gatekeeper:${VERSION}
           make docker-push-release IMG=gatekeeper:${VERSION}
         env:
           DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
