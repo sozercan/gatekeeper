@@ -18,7 +18,7 @@ jobs:
         id: get_version
         run: echo ::set-env name=VERSION::${GITHUB_REF#refs/tags/}
 
-      - name: m66ake docker-push-release
+      - name: make docker-push-release
         run: |
           make docker-build IMG=gatekeeper:${VERSION}
           make docker-push-release IMG=gatekeeper:${VERSION}
