@@ -21,12 +21,11 @@ jobs:
       - name: make docker-push-release
         run: |
           make docker-login
-          make docker-build
-          make docker-push-release
+          make docker-build IMG=gatekeeper:${VERSION}
+          make docker-push-release IMG=gatekeeper:${VERSION}
         env:
           DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          IMG: gatekeeper:${VERSION}
 
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:

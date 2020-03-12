@@ -17,13 +17,11 @@ jobs:
       - name: make docker-push-dev
         run: |
           make docker-login
-          make docker-build
-          make docker-push-dev
+          make docker-build IMG=gatekeeper:${GITHUB_SHA::8} DEV_TAG=${GITHUB_SHA::8}
+          make docker-push-dev IMG=gatekeeper:${GITHUB_SHA::8} DEV_TAG=${GITHUB_SHA::8}
         env:
           DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          IMG: gatekeeper:${GITHUB_SHA}
-          DEV_TAG: ${GITHUB_SHA}
 
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
