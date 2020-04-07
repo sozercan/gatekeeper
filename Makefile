@@ -72,7 +72,7 @@ e2e-bootstrap:
 	# Download and install kustomize
 	curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/v${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64 -o ${HOME}/bin/kustomize && chmod +x ${HOME}/bin/kustomize
 	# Download and install bats
-	sudo apt install -y bats
+	sudo apt-get update && sudo apt-get install -y bats
 	# Check for existing kind cluster
 	if [ $$(kind get clusters) ]; then kind delete cluster; fi
 	# Create a new kind cluster
