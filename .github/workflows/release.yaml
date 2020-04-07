@@ -22,6 +22,7 @@ jobs:
         run: |
           TAG=$(git rev-list -1 ${VERSION})
           make docker-login
+          make docker-build IMG=gatekeeper:${VERSION}
           make docker-push-release IMG=gatekeeper:${VERSION}
         env:
           DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
