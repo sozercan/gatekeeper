@@ -1,9 +1,7 @@
 # Image URL to use all building/pushing image targets
-# REGISTRY ?= quay.io
+REGISTRY ?= quay.io
 # REPOSITORY ?= $(REGISTRY)/open-policy-agent/gatekeeper
-
-REGISTRY ?= docker.io
-REPOSITORY ?= sozercan/gatekeeper
+REPOSITORY ?= $(REGISTRY)/sozercan/gatekeeper
 
 IMG := $(REPOSITORY):latest
 DEV_TAG ?= dev
