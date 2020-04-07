@@ -3,9 +3,12 @@ on:
   push:
     branches:
       - e2e-actions # master
+    tags:
+      - "v*"
   pull_request:
     branches:
       - e2e-actions # master
+
 jobs:
   lint:
     name: "Lint"
