@@ -1,0 +1,25 @@
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8sallowedreplicas
+spec:
+  crd:
+    spec:
+      names:
+        kind: k8sallowedreplicas
+      validation:
+        # Schema for the `parameters` field
+        openAPIV3Schema:
+          properties:
+            replicas:
+              type: integer
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sallowedreplicas
+        violation[{"msg": msg}] {
+          num_of_replicas := input.review.object.spec.replicas
+          allowed_replicas := input.parameters.replicas
+          not (num_of_replicas >= allowed_replicas)
+          msg := sprintf("Number of replicas should be greater than  <%v>", [allowed_replicas])
+        }

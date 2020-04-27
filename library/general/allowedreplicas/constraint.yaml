@@ -1,0 +1,12 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: k8sallowedreplicas
+metadata:
+  name: k8s-allowed-replicas
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+  parameters:
+    message: Number of replicas should be greater than 3
+    replicas: 3
