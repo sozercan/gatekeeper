@@ -6,9 +6,14 @@ BATS_TESTS_DIR=test/bats/tests
 WAIT_TIME=120
 SLEEP_TIME=1
 CLEAN_CMD="echo cleaning..."
+TEARDOWN_FILE_CMD="echo teardown..."
 
 teardown() {
   bash -c "${CLEAN_CMD}"
+}
+
+teardown_file() {
+  bash -c "${TEARDOWN_FILE_CMD}"
 }
 
 @test "gatekeeper-controller-manager is running" {
@@ -49,18 +54,24 @@ teardown() {
 }
 
 @test "applying sync config" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/sync.yaml
+  FILE="${BATS_TESTS_DIR}/sync.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 }
 
 # creating a namespace early so it will have time to sync
 @test "create namespace for unique labels test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/good/no_dupe_ns.yaml
+  FILE="${BATS_TESTS_DIR}/good/no_dupe_ns.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 }
 
 @test "no ignore label unless namespace is exempt test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/good/ignore_label_ns.yaml
+  FILE="${BATS_TESTS_DIR}/good/ignore_label_ns.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_failure
 }
 
@@ -70,24 +81,34 @@ teardown() {
 }
 
 @test "required labels dryrun test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/templates/k8srequiredlabels_template.yaml
+  FILE="${BATS_TESTS_DIR}/templates/k8srequiredlabels_template.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl -n gatekeeper-system wait --for condition=established --timeout=60s crd/k8srequiredlabels.constraints.gatekeeper.sh"
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_gatekeeper.yaml
+  FILE="${BATS_TESTS_DIR}/constraints/all_ns_must_have_gatekeeper.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl get k8srequiredlabels.constraints.gatekeeper.sh ns-must-have-gk -o yaml | grep 'id: gatekeeper-controller-manager'"
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/good/good_ns.yaml
+  FILE="${BATS_TESTS_DIR}/good/good_ns.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/bad/bad_ns.yaml
+  FILE="${BATS_TESTS_DIR}/bad/bad_ns.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_match 'denied the request' "$output"
   assert_failure
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_gatekeeper-dryrun.yaml
+  FILE="${BATS_TESTS_DIR}/constraints/all_ns_must_have_gatekeeper-dryrun.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   run wait_for_process $WAIT_TIME $SLEEP_TIME "compare_generation k8srequiredlabels ns-must-have-gk"
@@ -96,14 +117,18 @@ teardown() {
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl get k8srequiredlabels.constraints.gatekeeper.sh ns-must-have-gk -o json | jq '.spec.enforcementAction' | grep dryrun"
 
   # deploying a violation with dryrun enforcement action will be accepted
-  run kubectl apply -f ${BATS_TESTS_DIR}/bad/bad_ns.yaml
+  FILE="${BATS_TESTS_DIR}/bad/bad_ns.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   CLEAN_CMD="kubectl delete -f ${BATS_TESTS_DIR}/bad/bad_ns.yaml"
 }
 
 @test "container limits test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/templates/k8scontainterlimits_template.yaml
+  FILE="${BATS_TESTS_DIR}/templates/k8scontainterlimits_template.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl -n gatekeeper-system wait --for condition=established --timeout=60s crd/k8scontainerlimits.constraints.gatekeeper.sh"
@@ -111,20 +136,28 @@ teardown() {
   run kubectl get crd/k8scontainerlimits.constraints.gatekeeper.sh
   assert_success
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/constraints/containers_must_be_limited.yaml
+  FILE="${BATS_TESTS_DIR}/constraints/containers_must_be_limited.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_match 'k8scontainerlimits.constraints.gatekeeper.sh/container-must-have-limits created' "$output"
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl get k8scontainerlimits.constraints.gatekeeper.sh container-must-have-limits -o yaml | grep 'id: gatekeeper-controller-manager'"
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/bad/opa_no_limits.yaml
+  FILE="${BATS_TESTS_DIR}/bad/opa_no_limits.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_match 'denied the request' "$output"
   assert_failure
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/good/opa.yaml
+  FILE="${BATS_TESTS_DIR}/good/opa.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/bad/bad_deployment.yaml
+  FILE="${BATS_TESTS_DIR}/bad/bad_deployment.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl get deploy opa-test-deployment -o yaml | grep unavailableReplicas"
@@ -141,18 +174,24 @@ teardown() {
 }
 
 @test "unique labels test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/templates/k8suniquelabel_template.yaml
+  FILE="${BATS_TESTS_DIR}/templates/k8suniquelabel_template.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl -n gatekeeper-system wait --for condition=established --timeout=60s crd/k8suniquelabel.constraints.gatekeeper.sh"
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_ns_gatekeeper_label_unique.yaml
+  FILE="${BATS_TESTS_DIR}/constraints/all_ns_gatekeeper_label_unique.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_match 'k8suniquelabel.constraints.gatekeeper.sh/ns-gk-label-unique created' "$output"
   assert_success
 
   wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl get k8suniquelabel.constraints.gatekeeper.sh ns-gk-label-unique -o yaml | grep 'id: gatekeeper-controller-manager'"
 
-  run kubectl apply -f ${BATS_TESTS_DIR}/bad/no_dupe_ns_2.yaml
+  FILE="${BATS_TESTS_DIR}/bad/no_dupe_ns_2.yaml"
+  TEARDOWN_FILE_CMD="${TEARDOWN_FILE_CMD}; kubectl delete -f ${FILE}"
+  run kubectl apply -f $FILE
   assert_match 'denied the request' "$output"
   assert_failure
 }
