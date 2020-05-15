@@ -104,7 +104,7 @@ jobs:
           if [[ $exists == null ]]
           then
             make docker-login
-            docker-buildx-dev DEV_TAG=${GITHUB_SHA::7}
+            make docker-buildx-dev DEV_TAG=${GITHUB_SHA::7}
           fi
         env:
           DOCKER_USER: ${{ secrets.DOCKER_USER }}
