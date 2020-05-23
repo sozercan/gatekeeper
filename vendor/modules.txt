@@ -154,7 +154,7 @@ github.com/open-policy-agent/frameworks/constraint/pkg/core/constraints
 github.com/open-policy-agent/frameworks/constraint/pkg/core/templates
 github.com/open-policy-agent/frameworks/constraint/pkg/regorewriter
 github.com/open-policy-agent/frameworks/constraint/pkg/types
-# github.com/open-policy-agent/opa v0.19.1
+# github.com/open-policy-agent/opa v0.20.4
 github.com/open-policy-agent/opa/ast
 github.com/open-policy-agent/opa/ast/internal/scanner
 github.com/open-policy-agent/opa/ast/internal/tokens
@@ -170,6 +170,7 @@ github.com/open-policy-agent/opa/internal/lcss
 github.com/open-policy-agent/opa/internal/leb128
 github.com/open-policy-agent/opa/internal/merge
 github.com/open-policy-agent/opa/internal/planner
+github.com/open-policy-agent/opa/internal/uuid
 github.com/open-policy-agent/opa/internal/version
 github.com/open-policy-agent/opa/internal/wasm/constant
 github.com/open-policy-agent/opa/internal/wasm/encoding

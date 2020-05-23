@@ -13,7 +13,7 @@ require (
 	github.com/onsi/ginkgo v1.11.0
 	github.com/onsi/gomega v1.8.1
 	github.com/open-policy-agent/frameworks/constraint v0.0.0-20200420221412-5bae2037a343
-	github.com/open-policy-agent/opa v0.19.1
+	github.com/open-policy-agent/opa v0.20.4
 	github.com/pkg/errors v0.8.1
 	github.com/prometheus/client_golang v1.1.0
 	go.opencensus.io v0.22.2

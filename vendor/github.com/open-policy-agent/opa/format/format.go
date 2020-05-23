@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/open-policy-agent/opa/ast"
 )
@@ -46,7 +45,7 @@ func MustAst(x interface{}) []byte {
 // encountered, a default location will be set on the AST node.
 func Ast(x interface{}) (formatted []byte, err error) {
 
-	wildcards := map[string]struct{}{}
+	wildcards := map[string]*ast.Term{}
 	wildcardNames := map[string]string{}
 	wildcardCounter := 0
 
@@ -63,10 +62,24 @@ func Ast(x interface{}) (formatted []byte, err error) {
 				if v.IsWildcard() {
 					str := string(v)
 					if _, seen := wildcards[str]; !seen {
-						wildcards[str] = struct{}{}
-					} else if !strings.HasPrefix(wildcardNames[str], "__wildcard") {
-						wildcardNames[str] = fmt.Sprintf("__wildcard%d__", wildcardCounter)
-						wildcardCounter++
+						// Keep a reference to the wildcard term so we can, if
+						// needed, rewrite it later
+						wildcards[str] = n
+					} else {
+						// On the second time we have seen the wildcard generate
+						// a name for it
+						newName, ok := wildcardNames[str]
+						if !ok {
+							newName = fmt.Sprintf("__wildcard%d__", wildcardCounter)
+							wildcardNames[str] = newName
+							wildcardCounter++
+
+							// Rewrite the first one that was "seen"
+							wildcards[str].Value = ast.Var(newName)
+						}
+
+						// Rewrite the current wildcard with its generated name
+						n.Value = ast.Var(newName)
 					}
 				}
 			}
@@ -214,7 +227,10 @@ func (w *writer) writeRule(rule *ast.Rule, isElse bool, comments []*ast.Comment)
 		return comments
 	}
 
-	w.startLine()
+	if !isElse {
+		w.startLine()
+	}
+
 	if rule.Default {
 		w.write("default ")
 	}
@@ -252,13 +268,73 @@ func (w *writer) writeRule(rule *ast.Rule, isElse bool, comments []*ast.Comment)
 	w.startLine()
 	w.write("}")
 	if rule.Else != nil {
-		w.blankLine()
-		rule.Else.Head.Name = ast.Var("else")
-		rule.Else.Head.Args = nil
-		comments = w.insertComments(comments, rule.Else.Head.Location)
-		comments = w.writeRule(rule.Else, true, comments)
+		comments = w.writeElse(rule, comments)
 	}
 	return comments
+}
+
+func (w *writer) writeElse(rule *ast.Rule, comments []*ast.Comment) []*ast.Comment {
+	// If there was nothing else on the line before the "else" starts
+	// then preserve this style of else block, otherwise it will be
+	// started as an "inline" else eg:
+	//
+	//     p {
+	//     	...
+	//     }
+	//
+	//     else {
+	//     	...
+	//     }
+	//
+	// versus
+	//
+	//     p {
+	// 	    ...
+	//     } else {
+	//     	...
+	//     }
+	//
+	// Note: This doesn't use the `close` as it currently isn't accurate for all
+	// types of values. Checking the actual line text is the most consistent approach.
+	wasInline := false
+	ruleLines := bytes.Split(rule.Location.Text, []byte("\n"))
+	relativeElseRow := rule.Else.Location.Row - rule.Location.Row
+	if relativeElseRow > 0 && relativeElseRow < len(ruleLines) {
+		elseLine := ruleLines[relativeElseRow]
+		if !bytes.HasPrefix(bytes.TrimSpace(elseLine), []byte("else")) {
+			wasInline = true
+		}
+	}
+
+	// If there are any comments between the closing brace of the previous rule and the start
+	// of the else block we will always insert a new blank line between them.
+	hasCommentAbove := len(comments) > 0 && comments[0].Location.Row-rule.Else.Head.Location.Row < 0 || w.beforeEnd != nil
+
+	if !hasCommentAbove && wasInline {
+		w.write(" ")
+	} else {
+		w.blankLine()
+		w.startLine()
+	}
+
+	rule.Else.Head.Name = ast.Var("else")
+	rule.Else.Head.Args = nil
+	comments = w.insertComments(comments, rule.Else.Head.Location)
+
+	if hasCommentAbove && !wasInline {
+		// The comments would have ended the line, be sure to start one again
+		// before writing the rest of the "else" rule.
+		w.startLine()
+	}
+
+	// For backwards compatibility adjust the rule head value location
+	// TODO: Refactor the logic for inserting comments, or special
+	// case comments in a rule head value so this can be removed
+	if rule.Else.Head.Value != nil {
+		rule.Else.Head.Value.Location = rule.Else.Head.Location
+	}
+
+	return w.writeRule(rule.Else, true, comments)
 }
 
 func (w *writer) writeHead(head *ast.Head, isDefault bool, isExpandedConst bool, comments []*ast.Comment) []*ast.Comment {
@@ -478,7 +554,7 @@ func (w *writer) writeTermParens(parens bool, term *ast.Term, comments []*ast.Co
 
 func (w *writer) writeRef(x ast.Ref) {
 	if len(x) > 0 {
-		w.write(x[0].Value.String())
+		w.writeTerm(x[0], nil)
 		path := x[1:]
 		for _, p := range path {
 			switch p := p.Value.(type) {
@@ -510,9 +586,6 @@ func (w *writer) writeRefStringPath(s ast.String) {
 
 func (w *writer) formatVar(v ast.Var) string {
 	if v.IsWildcard() {
-		if generatedName, ok := w.wildcardNames[string(v)]; ok {
-			return generatedName
-		}
 		return ast.Wildcard.String()
 	}
 	return v.String()
@@ -948,9 +1021,6 @@ func dedupComments(comments []*ast.Comment) []*ast.Comment {
 
 // startLine begins a line with the current indentation level.
 func (w *writer) startLine() {
-	if w.inline {
-		panic("currently in a line")
-	}
 	w.inline = true
 	for i := 0; i < w.level; i++ {
 		w.write(w.indent)
@@ -959,9 +1029,6 @@ func (w *writer) startLine() {
 
 // endLine ends a line with a newline.
 func (w *writer) endLine() {
-	if !w.inline {
-		panic("not in a line")
-	}
 	w.inline = false
 	if w.beforeEnd != nil && !w.delay {
 		w.write(" " + w.beforeEnd.String())
