@@ -72,12 +72,17 @@ var (
 		"color":        zapcore.LowercaseColorLevelEncoder,
 		"capitalcolor": zapcore.CapitalColorLevelEncoder,
 	}
+	logTimeEncoders = map[string]zapcore.LevelEncoder{
+		"epoch":   zapcore.EpochTimeEncoder,
+		"iso8601": zapcore.ISO8601TimeEncoder,
+	}
 )
 
 var (
 	logLevel            = flag.String("log-level", "INFO", "Minimum log level. For example, DEBUG, INFO, WARNING, ERROR. Defaulted to INFO if unspecified.")
 	logLevelKey         = flag.String("log-level-key", "level", "JSON key for the log level field, defaults to `level`")
 	logLevelEncoder     = flag.String("log-level-encoder", "lower", "Encoder for the value of the log level field. Valid values: [`lower`, `capital`, `color`, `capitalcolor`], default: `lower`")
+	logTimeEncoder      = flag.String("log-time-encoder", "epoch", "Encoder for the value of the log time field. Valid values: [`epoch`, `iso8601`], default: `epoch`")
 	healthAddr          = flag.String("health-addr", ":9090", "The address to which the health endpoint binds.")
 	metricsAddr         = flag.String("metrics-addr", "0", "The address the metric endpoint binds to.")
 	port                = flag.Int("port", 443, "port for the server. defaulted to 443 if unspecified ")
@@ -97,9 +102,15 @@ func init() {
 
 func main() {
 	flag.Parse()
-	encoder, ok := logLevelEncoders[*logLevelEncoder]
+	levelEncoder, ok := logLevelEncoders[*logLevelEncoder]
 	if !ok {
 		setupLog.Error(fmt.Errorf("invalid log level encoder: %v", *logLevelEncoder), "Invalid log level encoder")
+		os.Exit(1)
+	}
+
+	timeEncoder, ok := logTimeEncoders[*logTimeEncoder]
+	if !ok {
+		setupLog.Error(fmt.Errorf("invalid log time encoder: %v", *logTimeEncoder), "Invalid log time encoder")
 		os.Exit(1)
 	}
 
@@ -107,7 +118,8 @@ func main() {
 	case "DEBUG":
 		eCfg := zap.NewDevelopmentEncoderConfig()
 		eCfg.LevelKey = *logLevelKey
-		eCfg.EncodeLevel = encoder
+		eCfg.EncodeTime = logTimeEncoder
+		eCfg.EncodeLevel = levelEncoder
 		ctrl.SetLogger(crzap.New(crzap.UseDevMode(true), crzap.Encoder(zapcore.NewConsoleEncoder(eCfg))))
 	case "WARNING", "ERROR":
 		setLoggerForProduction(encoder)
@@ -116,6 +128,7 @@ func main() {
 	default:
 		eCfg := zap.NewProductionEncoderConfig()
 		eCfg.LevelKey = *logLevelKey
+		eCfg.EncodeTime = logTimeEncoder
 		eCfg.EncodeLevel = encoder
 		ctrl.SetLogger(crzap.New(crzap.UseDevMode(false), crzap.Encoder(zapcore.NewJSONEncoder(eCfg))))
 	}
