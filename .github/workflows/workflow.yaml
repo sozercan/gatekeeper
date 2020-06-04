@@ -18,7 +18,7 @@ on:
       - "**.md"
 env:
   GITHUB_REPO: sozercan/gatekeeper
-  IMAGE_REPO: sozercan/gatekeeper
+  IMAGE_REPO: quay.io/sozercan/gatekeeper
 
 jobs:
   lint:

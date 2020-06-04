@@ -3,7 +3,7 @@ DOCKER_CLI_EXPERIMENTAL=enabled
 
 # Image URL to use all building/pushing image targets
 REGISTRY ?= quay.io
-REPOSITORY ?= $(REGISTRY)/open-policy-agent/gatekeeper
+REPOSITORY ?= $(REGISTRY)/sozercan/gatekeeper
 
 IMG := $(REPOSITORY):latest
 # DEV_TAG will be replaced with short Git SHA on pre-release stage in CI
@@ -200,6 +200,7 @@ docker-buildx-dev: test
 	fi
 	docker buildx build --platform "linux/amd64,linux/arm64,linux/arm/v7" \
 		-t $(REPOSITORY):$(DEV_TAG) \
+		-t $(REPOSITORY):dev \
 		. --push
 
 docker-buildx-release: test
