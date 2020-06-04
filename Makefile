@@ -199,8 +199,8 @@ docker-buildx-dev: test
 		docker buildx create --platform "linux/amd64,linux/arm64,linux/arm/v7" --name container-builder --use;\
 	fi
 	docker buildx build --platform "linux/amd64,linux/arm64,linux/arm/v7" \
-		-t $(REPOSITORY):$(DEV_TAG) \
 		-t $(REPOSITORY):dev \
+		-t $(REPOSITORY):$(DEV_TAG) \
 		. --push
 
 docker-buildx-release: test
