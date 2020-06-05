@@ -205,7 +205,7 @@ docker-buildx-dev: test
 		-t $(REPOSITORY):$(DEV_TAG)-linux-armv7 \
 		. --push
 	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create $(REPOSITORY):$(DEV_TAG) $(REPOSITORY):$(DEV_TAG)-linux-amd64 $(REPOSITORY):$(DEV_TAG)-linux-arm64 $(REPOSITORY):$(DEV_TAG)-linux-armv7
-	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest inspect $(REPOSITORY):$(DEV_TAG)
+	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create $(REPOSITORY):dev $(REPOSITORY):$(DEV_TAG)-linux-amd64 $(REPOSITORY):$(DEV_TAG)-linux-arm64 $(REPOSITORY):$(DEV_TAG)-linux-armv7
 	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push $(REPOSITORY):$(DEV_TAG)
 	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push $(REPOSITORY):dev
 
@@ -223,7 +223,7 @@ docker-buildx-release: test
 		-t $(REPOSITORY):$(VERSION)-linux-armv7 \
 		. --push
 	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create $(REPOSITORY):$(VERSION) $(REPOSITORY):$(VERSION)-linux-amd64 $(REPOSITORY):$(VERSION)-linux-arm64 $(REPOSITORY):$(VERSION)-linux-armv7
-	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest inspect $(REPOSITORY):$(VERSION)
+	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create $(REPOSITORY):latest $(REPOSITORY):$(VERSION)-linux-amd64 $(REPOSITORY):$(VERSION)-linux-arm64 $(REPOSITORY):$(VERSION)-linux-armv7
 	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push $(REPOSITORY):$(VERSION)
 	DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push $(REPOSITORY):latest
 
