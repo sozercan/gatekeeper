@@ -50,6 +50,7 @@ var (
 	auditChunkSize            = flag.Uint64("audit-chunk-size", defaultListLimit, "(alpha) Kubernetes API chunking List results when retrieving cluster resources using discovery client. defaulted to 0 if unspecified")
 	auditFromCache            = flag.Bool("audit-from-cache", false, "pull resources from OPA cache when auditing")
 	emitAuditEvents           = flag.Bool("emit-audit-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace with detailed info for each violation from an audit")
+	auditResultsEndpoint      = flag.String("audit-results-endpoint", "", "endpoint that audit results will be sent to")
 	emptyAuditResults         []auditResult
 )
 
