@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"strconv"
@@ -50,7 +51,7 @@ var (
 	auditChunkSize            = flag.Uint64("audit-chunk-size", defaultListLimit, "(alpha) Kubernetes API chunking List results when retrieving cluster resources using discovery client. defaulted to 0 if unspecified")
 	auditFromCache            = flag.Bool("audit-from-cache", false, "pull resources from OPA cache when auditing")
 	emitAuditEvents           = flag.Bool("emit-audit-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace with detailed info for each violation from an audit")
-	auditResultsEndpoint      = flag.String("audit-results-endpoint", "", "endpoint that audit results will be sent to")
+	auditResultsEndpoint      = flag.String("audit-results-endpoint", "server-service.default.svc.cluster.local:9999", "endpoint that audit results will be sent to")
 	emptyAuditResults         []auditResult
 )
 
@@ -71,16 +72,16 @@ type Manager struct {
 }
 
 type auditResult struct {
-	cname             string
-	cnamespace        string
-	cgvk              schema.GroupVersionKind
-	capiversion       string
-	rkind             string
-	rname             string
-	rnamespace        string
-	message           string
-	enforcementAction string
-	constraint        *unstructured.Unstructured
+	Cname             string                  `json:"cname"`
+	Cnamespace        string                  `json:"cnamespace"`
+	Cgvk              schema.GroupVersionKind `json:"cgvk"`
+	Capiversion       string                  `json:"capiversion"`
+	Rkind             string                  `json:"rkind"`
+	Rname             string                  `json:"rname"`
+	Rnamespace        string                  `json:"rnamespace"`
+	Message           string                  `json:"message"`
+	EnforcementAction string                  `json:"enforcementAction"`
+	Constraint        *unstructured.Unstructured
 }
 
 // StatusViolation represents each violation under status
@@ -216,7 +217,7 @@ func (am *Manager) audit(ctx context.Context) error {
 	// log constraints with violations
 	for link := range updateLists {
 		ar := updateLists[link][0]
-		logConstraint(am.log, ar.constraint, ar.enforcementAction, totalViolationsPerConstraint[link])
+		logConstraint(am.log, ar.Constraint, ar.EnforcementAction, totalViolationsPerConstraint[link])
 	}
 
 	for k, v := range totalViolationsPerEnforcementAction {
@@ -423,27 +424,77 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		// append audit results only if it is below violations limit
 		if uint(len(updateLists[selfLink])) < *constraintViolationsLimit {
 			result := auditResult{
-				cgvk:              gvk,
-				capiversion:       apiVersion,
-				cname:             name,
-				cnamespace:        namespace,
-				rkind:             rkind,
-				rname:             rname,
-				rnamespace:        rnamespace,
-				message:           message,
-				enforcementAction: enforcementAction,
-				constraint:        r.Constraint,
+				Cgvk:              gvk,
+				Capiversion:       apiVersion,
+				Cname:             name,
+				Cnamespace:        namespace,
+				Rkind:             rkind,
+				Rname:             rname,
+				Rnamespace:        rnamespace,
+				Message:           message,
+				EnforcementAction: enforcementAction,
+				Constraint:        r.Constraint,
 			}
 			updateLists[selfLink] = append(updateLists[selfLink], result)
 		}
 		ea := util.EnforcementAction(enforcementAction)
 		totalViolationsPerEnforcementAction[ea]++
 		logViolation(am.log, r.Constraint, r.EnforcementAction, rkind, rnamespace, rname, message)
+
+		if *auditResultsEndpoint != "" {
+			am.sendResultsToEndpoint(am.log, r.Constraint, r.EnforcementAction, rkind, rnamespace, rname, message)
+		}
+
 		if *emitAuditEvents {
 			emitEvent(r.Constraint, timestamp, enforcementAction, rkind, rnamespace, rname, message, am.gkNamespace, am.eventRecorder)
 		}
 	}
 	return nil
+}
+
+func (am *Manager) sendResultsToEndpoint(l logr.Logger,
+	constraint *unstructured.Unstructured,
+	enforcementAction, rkind, rnamespace, rname, message string) {
+	conf := &tls.Config{
+		InsecureSkipVerify: true,
+	}
+
+	conn, err := tls.Dial("tcp", *auditResultsEndpoint, conf)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// result := auditResult{
+	// 	Cname:             constraint.GetName(),
+	// 	Cnamespace:        constraint.GetNamespace(),
+	// 	Cgvk:              constraint.GetObjectKind().GroupVersionKind(),
+	// 	Capiversion:       constraint.GetAPIVersion(),
+	// 	Rkind:             rkind,
+	// 	Rname:             rname,
+	// 	Message:           message,
+	// 	EnforcementAction: enforcementAction,
+	// }
+
+	result := StatusViolation{
+		Kind:              rkind,
+		Name:              rname,
+		Namespace:         rnamespace,
+		Message:           message,
+		EnforcementAction: enforcementAction,
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		am.log.Error(err, "error")
+	}
+
+	am.log.Info("*** sendResultsToEndpoint", "sendResultsToEndpoint", *auditResultsEndpoint, "results", string(raw))
+
+	_, err = conn.Write(raw)
+	if err != nil {
+		am.log.Error(err, "error")
+	}
 }
 
 func (am *Manager) writeAuditResults(ctx context.Context, resourceList []schema.GroupVersionKind, updateLists map[string][]auditResult, timestamp string, totalViolations map[string]int64) error {
@@ -499,16 +550,16 @@ func (ucloop *updateConstraintLoop) updateConstraintStatus(ctx context.Context, 
 	for _, ar := range auditResults {
 		// append statusViolations for this constraint until constraintViolationsLimit has reached
 		if uint(len(statusViolations)) < *constraintViolationsLimit {
-			msg := ar.message
+			msg := ar.Message
 			if len(msg) > msgSize {
 				msg = truncateString(msg, msgSize)
 			}
 			statusViolations = append(statusViolations, StatusViolation{
-				Kind:              ar.rkind,
-				Name:              ar.rname,
-				Namespace:         ar.rnamespace,
+				Kind:              ar.Rkind,
+				Name:              ar.Rname,
+				Namespace:         ar.Rnamespace,
 				Message:           msg,
-				EnforcementAction: ar.enforcementAction,
+				EnforcementAction: ar.EnforcementAction,
 			})
 		}
 	}
