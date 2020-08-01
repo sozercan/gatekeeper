@@ -102,6 +102,8 @@ spec:
         - mountPath: /certs
           name: cert
           readOnly: true
+        - mountPath: /etc/endpoint-certs
+          name: endpoint-certs
       nodeSelector: 
 {{ toYaml .Values.nodeSelector | indent 8 }}
       affinity:
@@ -115,3 +117,7 @@ spec:
         secret:
           defaultMode: 420
           secretName: gatekeeper-webhook-server-cert
+      - name: endpoint-certs
+        secret:
+          defaultMode: 420
+          secretName: gatekeeper-endpoint-certs

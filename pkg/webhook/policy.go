@@ -16,7 +16,9 @@ limitations under the License.
 package webhook
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -74,7 +76,7 @@ var (
 	logDenies                          = flag.Bool("log-denies", false, "log detailed info on each deny")
 	emitAdmissionEvents                = flag.Bool("emit-admission-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace for each admission violation")
 	serviceaccount                     = fmt.Sprintf("system:serviceaccount:%s:%s", util.GetNamespace(), serviceAccountName)
-	// webhookName is deprecated, set this on the manifest YAML if needed"
+	admissionResultsEndpoint           = flag.String("admission-results-endpoint", "https://server-service.default.svc.cluster.local:9999", "endpoint that admission results will be sent to")
 )
 
 // +kubebuilder:webhook:verbs=create;update,path=/v1/admit,mutating=false,failurePolicy=ignore,groups=*,resources=*,versions=*,name=validation.gatekeeper.sh
@@ -187,8 +189,6 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 		}
 	}()
 
-	//
-
 	// namespace is excluded from webhook using config
 	if h.skipExcludedNamespace(req.AdmissionRequest.Namespace) {
 		requestResponse = allowResponse
@@ -221,6 +221,41 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 
 	requestResponse = allowResponse
 	return admission.ValidationResponse(true, "")
+}
+
+type admissionResult struct {
+	Cname             string `json:"cname"`
+	Ckind             string `json:"ckind"`
+	EnforcementAction string `json:"enforcementAction"`
+	Rkind             string `json:"rkind"`
+	Rnamespace        string `json:"rnamespace"`
+	RequestName       string `json:"requestName"`
+	RequestUsername   string `json:"requestUsername"`
+}
+
+func sendResultsToEndpoint(result admissionResult) error {
+	tlsConfig, err := util.GetTLSConfig()
+	if err != nil {
+		return err
+	}
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+
+	_, err = httpClient.Post(*admissionResultsEndpoint, "application/json", bytes.NewBuffer(raw))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (h *validationHandler) getDenyMessages(res []*rtypes.Result, req admission.Request) []string {
@@ -272,6 +307,21 @@ func (h *validationHandler) getDenyMessages(res []*rtypes.Result, req admission.
 				}
 				ref := getViolationRef(h.gkNamespace, req.AdmissionRequest.Kind.Kind, resourceName, req.AdmissionRequest.Namespace, r.Constraint.GetKind(), r.Constraint.GetName(), r.Constraint.GetNamespace())
 				h.eventRecorder.AnnotatedEventf(ref, annotations, corev1.EventTypeWarning, reason, "%s, Resource Namespace: %s, Constraint: %s, Message: %s", eventMsg, req.AdmissionRequest.Namespace, r.Constraint.GetName(), r.Msg)
+			}
+
+			if *admissionResultsEndpoint != "" {
+				result := admissionResult{
+					Cname:             r.Constraint.GetName(),
+					Ckind:             r.Constraint.GetKind(),
+					EnforcementAction: r.EnforcementAction,
+					Rkind:             req.AdmissionRequest.Kind.Kind,
+					Rnamespace:        req.AdmissionRequest.Namespace,
+					RequestName:       resourceName,
+					RequestUsername:   req.AdmissionRequest.UserInfo.Username,
+				}
+
+				err := sendResultsToEndpoint(result)
+				log.Error(err, "failed while sending results to admission endpoint")
 			}
 
 		}

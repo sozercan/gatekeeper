@@ -3,12 +3,8 @@ package audit
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"flag"
-	"fmt"
-	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
@@ -426,9 +422,10 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		rname := resource.GetName()
 		rkind := resource.GetKind()
 		rnamespace := resource.GetNamespace()
-		// append audit results only if it is below violations limit
-		if uint(len(updateLists[selfLink])) < *constraintViolationsLimit {
-			result := auditResult{
+		var result auditResult
+
+		if uint(len(updateLists[selfLink])) < *constraintViolationsLimit || *auditResultsEndpoint != "" {
+			result = auditResult{
 				Cgvk:              gvk,
 				Capiversion:       apiVersion,
 				Cname:             name,
@@ -440,6 +437,9 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 				EnforcementAction: enforcementAction,
 				Constraint:        r.Constraint,
 			}
+		}
+		// append audit results only if it is below violations limit
+		if uint(len(updateLists[selfLink])) < *constraintViolationsLimit {
 			updateLists[selfLink] = append(updateLists[selfLink], result)
 		}
 		ea := util.EnforcementAction(enforcementAction)
@@ -447,7 +447,8 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		logViolation(am.log, r.Constraint, r.EnforcementAction, rkind, rnamespace, rname, message)
 
 		if *auditResultsEndpoint != "" {
-			am.sendResultsToEndpoint(am.log, r.Constraint, r.EnforcementAction, rkind, rnamespace, rname, message)
+			err := sendResultsToEndpoint(result)
+			am.log.Error(err, "failed while sending results to endpoint")
 		}
 
 		if *emitAuditEvents {
@@ -457,45 +458,10 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 	return nil
 }
 
-func (am *Manager) getAuditTLSConfig() (*tls.Config, error) {
-	// Load our CA certificate
-	clientCACert, err := ioutil.ReadFile("/etc/audit-certs/server.crt")
+func sendResultsToEndpoint(result auditResult) error {
+	tlsConfig, err := util.GetTLSConfig()
 	if err != nil {
-		am.log.Error(err, "Unable to open cert")
-		return nil, err
-	}
-
-	clientCertPool := x509.NewCertPool()
-	ok := clientCertPool.AppendCertsFromPEM(clientCACert)
-	if !ok {
-		return nil, fmt.Errorf("Failed to append certs to certificate pool")
-	}
-
-	// optional client certificate
-	certPath := "/etc/audit-certs/client.crt" //os.Getenv("CLIENT_CERT_PATH")
-	keyPath := "/etc/audit-certs/client.key"  //os.Getenv("CLIENT_KEY_PATH")
-	if certPath == "" || keyPath == "" {
-		return &tls.Config{RootCAs: clientCertPool}, nil
-	}
-
-	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		am.log.Error(err, "Error loading client certificate")
-		return nil, err
-	}
-	return &tls.Config{
-		RootCAs:      clientCertPool,
-		Certificates: []tls.Certificate{clientCert},
-	}, nil
-}
-
-func (am *Manager) sendResultsToEndpoint(l logr.Logger,
-	constraint *unstructured.Unstructured,
-	enforcementAction, rkind, rnamespace, rname, message string) {
-
-	tlsConfig, err := am.getAuditTLSConfig()
-	if err != nil {
-		am.log.Error(err, "error on getAuditTLSConfig")
+		return err
 	}
 
 	httpClient := &http.Client{
@@ -504,36 +470,17 @@ func (am *Manager) sendResultsToEndpoint(l logr.Logger,
 		},
 	}
 
-	result := auditResult{
-		Cname:             constraint.GetName(),
-		Cnamespace:        constraint.GetNamespace(),
-		Cgvk:              constraint.GetObjectKind().GroupVersionKind(),
-		Capiversion:       constraint.GetAPIVersion(),
-		Rkind:             rkind,
-		Rname:             rname,
-		Message:           message,
-		EnforcementAction: enforcementAction,
-	}
-
-	// result := StatusViolation{
-	// 	Kind:              rkind,
-	// 	Name:              rname,
-	// 	Namespace:         rnamespace,
-	// 	Message:           message,
-	// 	EnforcementAction: enforcementAction,
-	// }
-
 	raw, err := json.Marshal(result)
 	if err != nil {
-		am.log.Error(err, "error")
+		return err
 	}
 
 	_, err = httpClient.Post(*auditResultsEndpoint, "application/json", bytes.NewBuffer(raw))
 	if err != nil {
-		am.log.Error(err, "error on post")
+		return err
 	}
 
-	am.log.Info("*** sendResultsToEndpoint", "sendResultsToEndpoint", *auditResultsEndpoint, "results", string(raw))
+	return nil
 }
 
 func (am *Manager) writeAuditResults(ctx context.Context, resourceList []schema.GroupVersionKind, updateLists map[string][]auditResult, timestamp string, totalViolations map[string]int64) error {

@@ -571,7 +571,7 @@ kind: Secret
 metadata:
   labels:
     gatekeeper.sh/system: "yes"
-  name: gatekeeper-audit-certs
+  name: gatekeeper-endpoint-certs
   namespace: gatekeeper-system
 type: Opaque
 ---
@@ -676,17 +676,17 @@ spec:
           runAsNonRoot: true
           runAsUser: 1000
         volumeMounts:
-        - mountPath: /etc/audit-certs
-          name: audit-certs
+        - mountPath: /etc/endpoint-certs
+          name: endpoint-certs
       nodeSelector:
         kubernetes.io/os: linux
       serviceAccountName: gatekeeper-admin
       terminationGracePeriodSeconds: 60
       volumes:
-      - name: audit-certs
+      - name: endpoint-certs
         secret:
           defaultMode: 420
-          secretName: gatekeeper-audit-certs
+          secretName: gatekeeper-endpoint-certs
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -783,6 +783,8 @@ spec:
         - mountPath: /certs
           name: cert
           readOnly: true
+        - mountPath: /etc/endpoint-certs
+          name: endpoint-certs
       nodeSelector:
         kubernetes.io/os: linux
       serviceAccountName: gatekeeper-admin
@@ -792,6 +794,10 @@ spec:
         secret:
           defaultMode: 420
           secretName: gatekeeper-webhook-server-cert
+      - name: endpoint-certs
+        secret:
+          defaultMode: 420
+          secretName: gatekeeper-endpoint-certs
 ---
 apiVersion: admissionregistration.k8s.io/v1beta1
 kind: ValidatingWebhookConfiguration
