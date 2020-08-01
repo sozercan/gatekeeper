@@ -86,6 +86,9 @@ spec:
           runAsGroup: 999
           runAsNonRoot: true
           runAsUser: 1000
+        volumeMounts:
+        - mountPath: /etc/audit-certs
+          name: audit-certs
       nodeSelector: 
 {{ toYaml .Values.nodeSelector | indent 8 }}
       affinity:
@@ -94,3 +97,8 @@ spec:
 {{ toYaml .Values.tolerations | indent 8 }}
       serviceAccountName: gatekeeper-admin
       terminationGracePeriodSeconds: 60
+      volumes:
+      - name: audit-certs
+        secret:
+          defaultMode: 420
+          secretName: gatekeeper-audit-certs

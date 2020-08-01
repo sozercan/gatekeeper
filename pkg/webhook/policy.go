@@ -187,6 +187,8 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 		}
 	}()
 
+	//
+
 	// namespace is excluded from webhook using config
 	if h.skipExcludedNamespace(req.AdmissionRequest.Namespace) {
 		requestResponse = allowResponse

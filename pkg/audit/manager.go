@@ -1,10 +1,15 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io/ioutil"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +56,7 @@ var (
 	auditChunkSize            = flag.Uint64("audit-chunk-size", defaultListLimit, "(alpha) Kubernetes API chunking List results when retrieving cluster resources using discovery client. defaulted to 0 if unspecified")
 	auditFromCache            = flag.Bool("audit-from-cache", false, "pull resources from OPA cache when auditing")
 	emitAuditEvents           = flag.Bool("emit-audit-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace with detailed info for each violation from an audit")
-	auditResultsEndpoint      = flag.String("audit-results-endpoint", "server-service.default.svc.cluster.local:9999", "endpoint that audit results will be sent to")
+	auditResultsEndpoint      = flag.String("audit-results-endpoint", "https://server-service.default.svc.cluster.local:9999", "endpoint that audit results will be sent to")
 	emptyAuditResults         []auditResult
 )
 
@@ -452,49 +457,83 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 	return nil
 }
 
+func (am *Manager) getAuditTLSConfig() (*tls.Config, error) {
+	// Load our CA certificate
+	clientCACert, err := ioutil.ReadFile("/etc/audit-certs/server.crt")
+	if err != nil {
+		am.log.Error(err, "Unable to open cert")
+		return nil, err
+	}
+
+	clientCertPool := x509.NewCertPool()
+	ok := clientCertPool.AppendCertsFromPEM(clientCACert)
+	if !ok {
+		return nil, fmt.Errorf("Failed to append certs to certificate pool")
+	}
+
+	// optional client certificate
+	certPath := "/etc/audit-certs/client.crt" //os.Getenv("CLIENT_CERT_PATH")
+	keyPath := "/etc/audit-certs/client.key"  //os.Getenv("CLIENT_KEY_PATH")
+	if certPath == "" || keyPath == "" {
+		return &tls.Config{RootCAs: clientCertPool}, nil
+	}
+
+	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		am.log.Error(err, "Error loading client certificate")
+		return nil, err
+	}
+	return &tls.Config{
+		RootCAs:      clientCertPool,
+		Certificates: []tls.Certificate{clientCert},
+	}, nil
+}
+
 func (am *Manager) sendResultsToEndpoint(l logr.Logger,
 	constraint *unstructured.Unstructured,
 	enforcementAction, rkind, rnamespace, rname, message string) {
-	conf := &tls.Config{
-		InsecureSkipVerify: true,
-	}
 
-	conn, err := tls.Dial("tcp", *auditResultsEndpoint, conf)
+	tlsConfig, err := am.getAuditTLSConfig()
 	if err != nil {
-		return
+		am.log.Error(err, "error on getAuditTLSConfig")
 	}
-	defer conn.Close()
 
-	// result := auditResult{
-	// 	Cname:             constraint.GetName(),
-	// 	Cnamespace:        constraint.GetNamespace(),
-	// 	Cgvk:              constraint.GetObjectKind().GroupVersionKind(),
-	// 	Capiversion:       constraint.GetAPIVersion(),
-	// 	Rkind:             rkind,
-	// 	Rname:             rname,
-	// 	Message:           message,
-	// 	EnforcementAction: enforcementAction,
-	// }
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
 
-	result := StatusViolation{
-		Kind:              rkind,
-		Name:              rname,
-		Namespace:         rnamespace,
+	result := auditResult{
+		Cname:             constraint.GetName(),
+		Cnamespace:        constraint.GetNamespace(),
+		Cgvk:              constraint.GetObjectKind().GroupVersionKind(),
+		Capiversion:       constraint.GetAPIVersion(),
+		Rkind:             rkind,
+		Rname:             rname,
 		Message:           message,
 		EnforcementAction: enforcementAction,
 	}
+
+	// result := StatusViolation{
+	// 	Kind:              rkind,
+	// 	Name:              rname,
+	// 	Namespace:         rnamespace,
+	// 	Message:           message,
+	// 	EnforcementAction: enforcementAction,
+	// }
 
 	raw, err := json.Marshal(result)
 	if err != nil {
 		am.log.Error(err, "error")
 	}
 
-	am.log.Info("*** sendResultsToEndpoint", "sendResultsToEndpoint", *auditResultsEndpoint, "results", string(raw))
-
-	_, err = conn.Write(raw)
+	_, err = httpClient.Post(*auditResultsEndpoint, "application/json", bytes.NewBuffer(raw))
 	if err != nil {
-		am.log.Error(err, "error")
+		am.log.Error(err, "error on post")
 	}
+
+	am.log.Info("*** sendResultsToEndpoint", "sendResultsToEndpoint", *auditResultsEndpoint, "results", string(raw))
 }
 
 func (am *Manager) writeAuditResults(ctx context.Context, resourceList []schema.GroupVersionKind, updateLists map[string][]auditResult, timestamp string, totalViolations map[string]int64) error {
