@@ -5,11 +5,19 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
+	"os"
 )
 
-func GetTLSConfig() (*tls.Config, error) {
+const (
+	serverCertName = "server.crt"
+	clientCertName = "client.crt"
+	clientKeyName  = "client.key"
+)
+
+func GetTLSConfig(certsDir string) (*tls.Config, error) {
 	// Load our CA certificate
-	clientCACert, err := ioutil.ReadFile("/etc/endpoint-certs/server.crt")
+	serverCertPath := certsDir + "/" + serverCertName
+	clientCACert, err := ioutil.ReadFile(serverCertPath)
 	if err != nil {
 		return nil, err
 	}
@@ -21,9 +29,9 @@ func GetTLSConfig() (*tls.Config, error) {
 	}
 
 	// optional client certificate
-	certPath := "/etc/endpoint-certs/client.crt"
-	keyPath := "/etc/endpoint-certs/client.key"
-	if certPath == "" || keyPath == "" {
+	certPath := certsDir + "/" + clientCertName
+	keyPath := certsDir + "/" + clientKeyName
+	if !exists(certPath) || !exists(keyPath) {
 		return &tls.Config{RootCAs: clientCertPool}, nil
 	}
 
@@ -35,4 +43,13 @@ func GetTLSConfig() (*tls.Config, error) {
 		RootCAs:      clientCertPool,
 		Certificates: []tls.Certificate{clientCert},
 	}, nil
+}
+
+func exists(name string) bool {
+	if _, err := os.Stat(name); err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+	}
+	return true
 }

@@ -53,6 +53,7 @@ var (
 	auditFromCache            = flag.Bool("audit-from-cache", false, "pull resources from OPA cache when auditing")
 	emitAuditEvents           = flag.Bool("emit-audit-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace with detailed info for each violation from an audit")
 	auditResultsEndpoint      = flag.String("audit-results-endpoint", "https://server-service.default.svc.cluster.local:9999", "endpoint that audit results will be sent to")
+	auditResultsCertsDir      = flag.String("audit-results-certs-dir", "/certs/endpoint", "directory where audit results certs are stored, defaults to /certs/endpoint")
 	emptyAuditResults         []auditResult
 )
 
@@ -448,7 +449,7 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 
 		if *auditResultsEndpoint != "" {
 			err := sendResultsToEndpoint(result)
-			am.log.Error(err, "failed while sending results to endpoint")
+			am.log.Error(err, "failed while sending results to audit endpoint")
 		}
 
 		if *emitAuditEvents {
@@ -459,11 +460,10 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 }
 
 func sendResultsToEndpoint(result auditResult) error {
-	tlsConfig, err := util.GetTLSConfig()
+	tlsConfig, err := util.GetTLSConfig(*auditResultsCertsDir)
 	if err != nil {
 		return err
 	}
-
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: tlsConfig,
@@ -474,12 +474,10 @@ func sendResultsToEndpoint(result auditResult) error {
 	if err != nil {
 		return err
 	}
-
 	_, err = httpClient.Post(*auditResultsEndpoint, "application/json", bytes.NewBuffer(raw))
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 

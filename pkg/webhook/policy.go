@@ -77,6 +77,7 @@ var (
 	emitAdmissionEvents                = flag.Bool("emit-admission-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace for each admission violation")
 	serviceaccount                     = fmt.Sprintf("system:serviceaccount:%s:%s", util.GetNamespace(), serviceAccountName)
 	admissionResultsEndpoint           = flag.String("admission-results-endpoint", "https://server-service.default.svc.cluster.local:9999", "endpoint that admission results will be sent to")
+	admissionResultsCertsDir           = flag.String("admission-results-certs-dir", "/certs/endpoint", "directory where admission results certs are stored, defaults to /certs/endpoint")
 )
 
 // +kubebuilder:webhook:verbs=create;update,path=/v1/admit,mutating=false,failurePolicy=ignore,groups=*,resources=*,versions=*,name=validation.gatekeeper.sh
@@ -234,11 +235,10 @@ type admissionResult struct {
 }
 
 func sendResultsToEndpoint(result admissionResult) error {
-	tlsConfig, err := util.GetTLSConfig()
+	tlsConfig, err := util.GetTLSConfig(*admissionResultsCertsDir)
 	if err != nil {
 		return err
 	}
-
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: tlsConfig,
@@ -249,12 +249,10 @@ func sendResultsToEndpoint(result admissionResult) error {
 	if err != nil {
 		return err
 	}
-
 	_, err = httpClient.Post(*admissionResultsEndpoint, "application/json", bytes.NewBuffer(raw))
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 

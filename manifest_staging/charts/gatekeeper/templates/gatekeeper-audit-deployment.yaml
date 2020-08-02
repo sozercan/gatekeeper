@@ -87,7 +87,7 @@ spec:
           runAsNonRoot: true
           runAsUser: 1000
         volumeMounts:
-        - mountPath: /etc/endpoint-certs
+        - mountPath: /certs/endpoint
           name: endpoint-certs
       nodeSelector: 
 {{ toYaml .Values.nodeSelector | indent 8 }}

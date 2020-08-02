@@ -676,7 +676,7 @@ spec:
           runAsNonRoot: true
           runAsUser: 1000
         volumeMounts:
-        - mountPath: /etc/endpoint-certs
+        - mountPath: /certs/endpoint
           name: endpoint-certs
       nodeSelector:
         kubernetes.io/os: linux
@@ -783,7 +783,7 @@ spec:
         - mountPath: /certs
           name: cert
           readOnly: true
-        - mountPath: /etc/endpoint-certs
+        - mountPath: /certs/endpoint
           name: endpoint-certs
       nodeSelector:
         kubernetes.io/os: linux

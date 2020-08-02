@@ -94,7 +94,7 @@ spec:
                 - all
           volumeMounts:
             - name: endpoint-certs
-              mountPath: /etc/endpoint-certs
+              mountPath: /certs/endpoint
       terminationGracePeriodSeconds: 60
       nodeSelector:
         kubernetes.io/os: linux
@@ -179,7 +179,7 @@ spec:
             runAsUser: 1000
           volumeMounts:
             - name: endpoint-certs
-              mountPath: /etc/endpoint-certs
+              mountPath: /certs/endpoint
       serviceAccountName: gatekeeper-admin
       terminationGracePeriodSeconds: 60
       nodeSelector:

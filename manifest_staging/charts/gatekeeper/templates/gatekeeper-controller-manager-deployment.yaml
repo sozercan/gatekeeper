@@ -102,7 +102,7 @@ spec:
         - mountPath: /certs
           name: cert
           readOnly: true
-        - mountPath: /etc/endpoint-certs
+        - mountPath: /certs/endpoint
           name: endpoint-certs
       nodeSelector: 
 {{ toYaml .Values.nodeSelector | indent 8 }}
