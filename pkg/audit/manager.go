@@ -74,13 +74,13 @@ type Manager struct {
 }
 
 type auditResult struct {
-	Cname             string                  `json:"cname"`
-	Cnamespace        string                  `json:"cnamespace"`
-	Cgvk              schema.GroupVersionKind `json:"cgvk"`
-	Capiversion       string                  `json:"capiversion"`
-	Rkind             string                  `json:"rkind"`
-	Rname             string                  `json:"rname"`
-	Rnamespace        string                  `json:"rnamespace"`
+	Cname             string                  `json:"constraint_name"`
+	Cnamespace        string                  `json:"constraint_namespace"`
+	Cgvk              schema.GroupVersionKind `json:"constraint_gvk"`
+	Capiversion       string                  `json:"constraint_apiversion"`
+	Rkind             string                  `json:"resource_kind"`
+	Rname             string                  `json:"resource_name"`
+	Rnamespace        string                  `json:"resource_namespace"`
 	Message           string                  `json:"message"`
 	EnforcementAction string                  `json:"enforcementAction"`
 	Constraint        *unstructured.Unstructured
@@ -470,6 +470,7 @@ func sendResultsToEndpoint(result auditResult) error {
 		},
 	}
 
+	result.Constraint = nil
 	raw, err := json.Marshal(result)
 	if err != nil {
 		return err

@@ -133,6 +133,18 @@ type validationHandler struct {
 
 type requestResponse string
 
+type admissionResult struct {
+	Process           string `json:"process"`
+	EventType         string `json:"event_type"`
+	Cname             string `json:"constraint_name"`
+	Ckind             string `json:"constraint_kind"`
+	EnforcementAction string `json:"enforcementAction"`
+	Rkind             string `json:"resource_kind"`
+	Rnamespace        string `json:"resource_namespace"`
+	Rname             string `json:"resource_name"`
+	RequestUsername   string `json:"request_username"`
+}
+
 const (
 	errorResponse   requestResponse = "error"
 	denyResponse    requestResponse = "deny"
@@ -224,16 +236,6 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 	return admission.ValidationResponse(true, "")
 }
 
-type admissionResult struct {
-	Cname             string `json:"cname"`
-	Ckind             string `json:"ckind"`
-	EnforcementAction string `json:"enforcementAction"`
-	Rkind             string `json:"rkind"`
-	Rnamespace        string `json:"rnamespace"`
-	RequestName       string `json:"requestName"`
-	RequestUsername   string `json:"requestUsername"`
-}
-
 func sendResultsToEndpoint(result admissionResult) error {
 	tlsConfig, err := util.GetTLSConfig(*admissionResultsCertsDir)
 	if err != nil {
@@ -309,15 +311,16 @@ func (h *validationHandler) getDenyMessages(res []*rtypes.Result, req admission.
 
 			if *admissionResultsEndpoint != "" {
 				result := admissionResult{
+					Process:           "admission",
+					EventType:         "violation",
 					Cname:             r.Constraint.GetName(),
 					Ckind:             r.Constraint.GetKind(),
 					EnforcementAction: r.EnforcementAction,
 					Rkind:             req.AdmissionRequest.Kind.Kind,
 					Rnamespace:        req.AdmissionRequest.Namespace,
-					RequestName:       resourceName,
+					Rname:             resourceName,
 					RequestUsername:   req.AdmissionRequest.UserInfo.Username,
 				}
-
 				err := sendResultsToEndpoint(result)
 				log.Error(err, "failed while sending results to admission endpoint")
 			}
