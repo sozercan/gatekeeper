@@ -21,7 +21,8 @@ var (
 		"The response time in seconds",
 		stats.UnitSeconds)
 
-	admissionStatusKey = tag.MustNewKey("admission_status")
+	admissionStatusKey         = tag.MustNewKey("admission_status")
+	enforcementActionStatusKey = tag.MustNewKey("enforcement_action")
 )
 
 func init() {
@@ -32,7 +33,7 @@ func init() {
 
 // StatsReporter reports webhook metrics
 type StatsReporter interface {
-	ReportRequest(response requestResponse, d time.Duration) error
+	ReportRequest(response requestResponse, enforcementAction string, d time.Duration) error
 }
 
 // reporter implements StatsReporter interface
@@ -53,10 +54,11 @@ func newStatsReporter() (StatsReporter, error) {
 }
 
 // Captures req count metric, recording the count and the duration
-func (r *reporter) ReportRequest(response requestResponse, d time.Duration) error {
+func (r *reporter) ReportRequest(response requestResponse, enforcementAction string, d time.Duration) error {
 	ctx, err := tag.New(
 		r.ctx,
 		tag.Insert(admissionStatusKey, string(response)),
+		tag.Insert(enforcementActionStatusKey, enforcementAction),
 	)
 	if err != nil {
 		return err
@@ -76,7 +78,7 @@ func register() error {
 			Description: "The number of requests that are routed to webhook",
 			Measure:     responseTimeInSecM,
 			Aggregation: view.Count(),
-			TagKeys:     []tag.Key{admissionStatusKey},
+			TagKeys:     []tag.Key{admissionStatusKey, enforcementActionStatusKey},
 		},
 		{
 			Name:        requestDurationMetricName,

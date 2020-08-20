@@ -141,6 +141,10 @@ const (
 func (h *validationHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := log.WithValues("hookType", "validation")
 
+	if strings.Contains(req.AdmissionRequest.Namespace, "test") && req.AdmissionRequest.Kind.Kind == "Pod" {
+		log.Info("*** HANDLE", "namespace", req.AdmissionRequest.Namespace)
+	}
+
 	var timeStart = time.Now()
 
 	if isGkServiceAccount(req.AdmissionRequest.UserInfo) {
@@ -178,10 +182,12 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 	}
 
 	requestResponse := unknownResponse
+	enforcementAction := ""
 	defer func() {
 		if h.reporter != nil {
+			log.Info("*** ReportRequest", "enforcementAction", enforcementAction, "requestResponse", requestResponse)
 			if err := h.reporter.ReportRequest(
-				requestResponse, time.Since(timeStart)); err != nil {
+				requestResponse, enforcementAction, time.Since(timeStart)); err != nil {
 				log.Error(err, "failed to report request")
 			}
 		}
@@ -206,7 +212,21 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 	}
 
 	res := resp.Results()
+
+	if len(res) > 0 {
+		enforcementAction = res[0].EnforcementAction
+	}
+
+	if strings.Contains(req.AdmissionRequest.Namespace, "test") && req.AdmissionRequest.Kind.Kind == "Pod" && len(res) == 0 {
+		log.Info("*** RES ZERO")
+	}
+
 	msgs := h.getDenyMessages(res, req)
+
+	if strings.Contains(req.AdmissionRequest.Namespace, "test") && req.AdmissionRequest.Kind.Kind == "Pod" && len(msgs) == 0 {
+		log.Info("*** MSGS ZERO")
+	}
+
 	if len(msgs) > 0 {
 		vResp := admission.ValidationResponse(false, strings.Join(msgs, "\n"))
 		if vResp.Result == nil {
@@ -235,6 +255,11 @@ func (h *validationHandler) getDenyMessages(res []*rtypes.Result, req admission.
 			}
 		}
 	}
+
+	if strings.Contains(req.AdmissionRequest.Namespace, "test") && req.AdmissionRequest.Kind.Kind == "Pod" {
+		log.Info("*** LEN RES", "len(res)", len(res))
+	}
+
 	for _, r := range res {
 		if r.EnforcementAction == "deny" || r.EnforcementAction == "dryrun" {
 			if *logDenies {
