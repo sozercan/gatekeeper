@@ -88,6 +88,7 @@ var (
 	disableCertRotation = flag.Bool("disable-cert-rotation", false, "disable automatic generation and rotation of webhook TLS certificates/keys")
 	enableProfile       = flag.Bool("enable-pprof", false, "enable pprof profiling")
 	profilePort         = flag.Int("pprof-port", 6060, "port for pprof profiling. defaulted to 6060 if unspecified")
+	test                = "test"
 )
 
 func init() {
