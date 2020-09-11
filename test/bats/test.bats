@@ -15,6 +15,7 @@ teardown_file() {
   kubectl delete ns good-ns bad-ns no-dupes excluded-namespace || true
   kubectl delete constrainttemplates k8scontainerlimits k8srequiredlabels k8suniquelabel || true
   kubectl delete deployments.apps opa-test-deployment || true
+  kubectl delete configs.config.gatekeeper.sh config -n gatekeeper-system || true
 }
 
 @test "gatekeeper-controller-manager is running" {
@@ -66,7 +67,8 @@ teardown_file() {
 }
 
 @test "no ignore label unless namespace is exempt test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/good/ignore_label_ns.yaml
+  run kubectl apply -f ${BATS_TESTS_DIR}/bad/ignore_label_ns.yaml
+  assert_match 'denied the request' "$output"
   assert_failure
 }
 
