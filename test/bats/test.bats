@@ -26,12 +26,13 @@ teardown() {
   CLEAN_CMD="${CLEAN_CMD}; rm ${CERT}"
   wait_for_process $WAIT_TIME $SLEEP_TIME "get_ca_cert ${cert}"
 
-  kubectl port-forward -n gatekeeper-system deployment/gatekeeper-controller-manager 8443:8443 &
-  FORWARDING_PID=$!
-  CLEAN_CMD="${CLEAN_CMD}; kill ${FORWARDING_PID}"
+  kubectl run temp --generator=run-pod/v1  --image=tutum/curl -- tail -f /dev/null
+  kubectl wait --for=condition=Ready --timeout=60s pod temp
+  kubectl cp ${cert} temp:/cacert
 
-  run wait_for_process $WAIT_TIME $SLEEP_TIME "curl -f -v --resolve gatekeeper-webhook-service.gatekeeper-system.svc:8443:127.0.0.1 --cacert ${cert} https://gatekeeper-webhook-service.gatekeeper-system.svc:8443/v1/admitlabel"
+  run wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl exec -it temp -- curl -f --cacert /cacert --connect-timeout 1 --max-time 2  https://gatekeeper-webhook-service.gatekeeper-system.svc:443/v1/admitlabel"
   assert_success
+  kubectl delete pod temp
 }
 
 @test "constrainttemplates crd is established" {
