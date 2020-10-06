@@ -13,7 +13,7 @@ require (
 	github.com/onsi/gomega v1.10.1
 	github.com/open-policy-agent/cert-controller v0.0.0-20200921224206-24b87bbc4b6e
 	github.com/open-policy-agent/frameworks/constraint v0.0.0-20200929072634-d96896eff389
-	github.com/open-policy-agent/opa v0.21.0
+	github.com/open-policy-agent/opa v0.23.2
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.1.0
 	go.opencensus.io v0.22.2
