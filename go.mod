@@ -3,7 +3,7 @@ module github.com/open-policy-agent/gatekeeper
 go 1.15
 
 require (
-	contrib.go.opencensus.io/exporter/prometheus v0.1.0
+	contrib.go.opencensus.io/exporter/prometheus v0.2.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/ghodss/yaml v1.0.0
 	github.com/go-logr/logr v0.1.0
@@ -15,7 +15,7 @@ require (
 	github.com/open-policy-agent/frameworks/constraint v0.0.0-20200929072634-d96896eff389
 	github.com/open-policy-agent/opa v0.21.0
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus/client_golang v1.1.0
+	github.com/prometheus/client_golang v1.2.1
 	go.opencensus.io v0.22.2
 	go.uber.org/zap v1.10.0
 	golang.org/x/net v0.0.0-20200520004742-59133d7f0dd7
