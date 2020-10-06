@@ -5,8 +5,14 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    allowed_updates:
+      - match:
+          update_type: "security"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "daily"
+    allowed_updates:
+      - match:
+          update_type: "security"
