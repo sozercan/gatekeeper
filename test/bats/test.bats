@@ -61,7 +61,8 @@ teardown() {
 }
 
 @test "no ignore label unless namespace is exempt test" {
-  run kubectl apply -f ${BATS_TESTS_DIR}/good/ignore_label_ns.yaml
+  run kubectl apply -f ${BATS_TESTS_DIR}/bad/ignore_label_ns.yaml
+  assert_match 'Only exempt namespace can have the admission.gatekeeper.sh/ignore label' "$output"
   assert_failure
 }
 
