@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/go-logr/zapr"
+	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
 	api "github.com/open-policy-agent/gatekeeper/apis"
@@ -38,6 +39,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/pkg/upgrade"
 	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/pkg/version"
 	"github.com/open-policy-agent/gatekeeper/pkg/watch"
 	"github.com/open-policy-agent/gatekeeper/pkg/webhook"
 	"github.com/open-policy-agent/gatekeeper/third_party/sigs.k8s.io/controller-runtime/pkg/dynamiccache"
@@ -132,8 +134,10 @@ func main() {
 		eCfg.EncodeLevel = encoder
 		ctrl.SetLogger(crzap.New(crzap.UseDevMode(false), crzap.Encoder(zapcore.NewJSONEncoder(eCfg))))
 	}
+	config := ctrl.GetConfigOrDie()
+	config.UserAgent = version.GetUserAgent()
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		NewCache:               dynamiccache.New,
 		Scheme:                 scheme,
 		MetricsBindAddress:     *metricsAddr,
@@ -154,7 +158,7 @@ func main() {
 	setupFinished := make(chan struct{})
 	if !*disableCertRotation && operations.IsAssigned(operations.Webhook) {
 		setupLog.Info("setting up cert rotation")
-		if err := webhook.AddRotator(mgr, &webhook.CertRotator{
+		if err := rotator.AddRotator(mgr, &rotator.CertRotator{
 			SecretKey: types.NamespacedName{
 				Namespace: util.GetNamespace(),
 				Name:      secretName,
@@ -163,8 +167,9 @@ func main() {
 			CAName:         caName,
 			CAOrganization: caOrganization,
 			DNSName:        dnsName,
-			CertsMounted:   setupFinished,
-		}, vwhName); err != nil {
+			IsReady:        setupFinished,
+			VWHName:        vwhName,
+		}); err != nil {
 			setupLog.Error(err, "unable to set up cert rotation")
 			os.Exit(1)
 		}
