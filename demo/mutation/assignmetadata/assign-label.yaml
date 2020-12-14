@@ -1,0 +1,14 @@
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: AssignMetadata
+metadata:
+  name: label-namespace
+spec:
+  match:
+    scope: Cluster
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Namespace"]
+  location: "metadata.labels.owner"
+  parameters:
+    assign:
+      value: "cloudnativekitchen"
