@@ -7,6 +7,8 @@ clear
 echo "===== ENTER developer ====="
 echo
 
+pe "kubectl get pods --all-namespaces"
+
 pe "cat bad/service.yaml"
 
 pe "kubectl apply -f bad/service.yaml"
