@@ -36,6 +36,8 @@ pe "kubectl get k8sexternalips.constraints.gatekeeper.sh external-ips -o yaml"
 
 pe "kubectl delete -f bad/service.yaml"
 
+pe "cat constraints/externalips_constraint.yaml"
+
 pe "kubectl apply -f constraints/externalips_constraint.yaml"
 
 pe "kubectl apply -f bad/service.yaml"
@@ -57,7 +59,7 @@ pe "kubectl apply -f assign/assign-externalip.yaml"
 
 pe "kubectl apply -f bad/service.yaml"
 
-pe "kubectl get svc allowed-external-ip -o yaml"
+pe "kubectl get svc disallowed-external-ip -o yaml"
 
 pe "kubectl get k8sexternalips.constraints.gatekeeper.sh external-ips -o yaml"
 
