@@ -2,8 +2,6 @@ name: generate_website
 
 on:
   push:
-    branches:
-      - master
     paths:
       - ".github/workflows/website.yaml"
       - "website/**"
