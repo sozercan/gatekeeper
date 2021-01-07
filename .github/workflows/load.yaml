@@ -1,0 +1,49 @@
+name: build_test_release
+on: [push, pull_request]
+
+jobs:
+  load_test:
+    name: "Load test"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+
+      - name: Checkout clusterloader2
+        run: |
+          git clone https://github.com/kubernetes/perf-tests.git
+
+      - name: Bootstrap e2e
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/bin
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+          make e2e-bootstrap
+
+      - name: Run e2e
+        run: |
+          make e2e-build-load-image IMG=gatekeeper-e2e:latest
+          make deploy IMG=gatekeeper-e2e:latest USE_LOCAL_IMG=true
+
+      - name: Deploy policies
+        run: |
+          export NUMBER_TEMPLATES=5
+          export NUMBER_CONSTRAINTS=5
+          ./test/load/deploy-policies.sh
+
+      - name: Run load tests
+        run: |
+          ./run-e2e.sh cluster-loader2 \
+            --nodes=1 \
+            --provider=local \
+            --report-dir="$GITHUB_WORKSPACE/_artifacts" \
+            --testconfig="$GITHUB_WORKSPACE/test/load/config.yaml"
+        working-directory: perf-tests
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v2
+        if: ${{ always() }}
+        with:
+          name: load_test_results
+          path: |
+            _artifact/*.json
