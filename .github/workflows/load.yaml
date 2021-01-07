@@ -1,4 +1,4 @@
-name: build_test_release
+name: load_test
 on: [push, pull_request]
 
 jobs:
@@ -20,7 +20,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
           make e2e-bootstrap
 
-      - name: Run e2e
+      - name: Deploy Gatekeeper
         run: |
           make e2e-build-load-image IMG=gatekeeper-e2e:latest
           make deploy IMG=gatekeeper-e2e:latest USE_LOCAL_IMG=true

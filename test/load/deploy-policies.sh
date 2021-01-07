@@ -26,8 +26,6 @@ compare_generation() {
     [[ "$(kubectl get ${kind}.constraints.gatekeeper.sh ${constraint} -o json | jq '.status.byPod[0].observedGeneration')" = "$(kubectl get ${kind}.constraints.gatekeeper.sh ${constraint} -o json | jq '.metadata.generation')" ]]
 }
 
-kubectl apply -f testing/gatekeeper/gk.yaml
-
 wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait -n gatekeeper-system --for=condition=Ready --timeout=60s pod -l control-plane=audit-controller"
 
 wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait -n gatekeeper-system --for=condition=Ready --timeout=60s pod -l control-plane=controller-manager"
@@ -41,9 +39,9 @@ t="1"
 while [ $t -le $NUMBER_TEMPLATES ]; do
     export TEMPLATE_NAME=template-$(openssl rand -hex 6)
 
-    envsubst <testing/gatekeeper/allowedrepos-template-template.yaml >testing/gatekeeper/allowedrepos-template.yaml
+    envsubst <test/load/allowedrepos-ct-template.yaml >test/load/allowedrepos-ct.yaml
 
-    kubectl apply -f testing/gatekeeper/allowedrepos-template.yaml
+    kubectl apply -f test/load/allowedrepos-ct.yaml
 
     wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait --for condition=established --timeout=60s crd/$TEMPLATE_NAME.constraints.gatekeeper.sh"
 
@@ -54,9 +52,9 @@ while [ $t -le $NUMBER_TEMPLATES ]; do
     while [ $c -le $NUMBER_CONSTRAINTS ]; do
         export CONSTRAINT_NAME=repo-$(openssl rand -hex 6)
 
-        envsubst <testing/gatekeeper/allowedrepos-constraint-template.yaml >testing/gatekeeper/allowedrepos-constraint.yaml
+        envsubst <test/load/allowedrepos-constraint-template.yaml >test/load/allowedrepos-constraint.yaml
 
-        kubectl apply -f testing/gatekeeper/allowedrepos-constraint.yaml
+        kubectl apply -f test/load/allowedrepos-constraint.yaml
 
         wait_for_process $WAIT_TIME $SLEEP_TIME "compare_generation $TEMPLATE_NAME $CONSTRAINT_NAME"
 
