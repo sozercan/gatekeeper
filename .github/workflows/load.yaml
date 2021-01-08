@@ -30,6 +30,7 @@ jobs:
           export NUMBER_TEMPLATES=5
           export NUMBER_CONSTRAINTS=5
           ./test/load/deploy-policies.sh
+          envsubst < test/load/config-template.yaml > test/load/config.yaml
 
       - name: Run load tests
         run: |
