@@ -51,6 +51,7 @@ jobs:
 
       - name: Run load tests
         run: |
+          export POD_COUNT=10
           ./run-e2e.sh cluster-loader2 \
             --nodes=1 \
             --provider=local \
@@ -70,16 +71,16 @@ jobs:
           path: |
             _artifacts/*.json
 
-      # - name: Comment results on PR
+      # - name: Comment results
       #   env:
       #     URL: ${{ github.event.issue.comments_url }}
       #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       #   run: |
-      #     echo "Scale [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) results:" > comment.txt
-      #     echo "\`\`\`" >> comment.txt
-      #     cat ./tests/scale/testResults/results.txt >> comment.txt
-      #     echo "\`\`\`" >> comment.txt
-      #     echo "{ \"body\" : $(cat comment.txt | jq -sR)}" > proto.json
+      #     echo "Load test [results](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID):" > results.txt
+      #     echo "\`\`\`" >> results.txt
+      #     cat _artifacts/*.json >> results.txt
+      #     echo "\`\`\`" >> results.txt
+      #     echo "{ \"body\" : $(cat results.txt | jq -sR)}" > proto.json
       #     curl \
       #       -X POST \
       #       $URL \
