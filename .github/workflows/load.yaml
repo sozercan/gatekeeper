@@ -55,7 +55,7 @@ jobs:
             --nodes=1 \
             --provider=local \
             --report-dir="$GITHUB_WORKSPACE/_artifacts" \
-            --testconfig="$GITHUB_WORKSPACE/test/load/config-template.yaml"
+            --testconfig="$GITHUB_WORKSPACE/test/load/config.yaml"
         working-directory: perf-tests
         env:
           CL2_POD_COUNT: 10
@@ -64,6 +64,8 @@ jobs:
 
       - name: Fix invalid characters
         run: |
+          set -x
+          ls -al .
           for f in *:*; do mv -v "$f" $(echo "$f" | tr ':' '-'); done
         working-directory: $GITHUB_WORKSPACE/_artifacts
 

@@ -44,12 +44,12 @@ steps:
         Method: WaitForControlledPodsRunning
         Params:
           action: gather
-  - name: Wait
-    measurements:
-      - Identifier: Wait
-        Method: Sleep
-        Params:
-          duration: {{$WAIT_TIME}}
+  # - name: Wait
+  #   measurements:
+  #     - Identifier: Wait
+  #       Method: Sleep
+  #       Params:
+  #         duration: {{$WAIT_TIME}}
   - measurements:
       - Identifier: ResourceUsageSummary
         Method: ResourceUsageSummary
