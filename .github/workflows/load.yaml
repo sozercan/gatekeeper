@@ -62,6 +62,10 @@ jobs:
           CL2_POD_THROUGHPUT: 5
           CL2_WAIT_TIME: 1m
 
+      - name: Fix invalid characters
+        run: |
+          for f in *:*; do mv -v "$f" $(echo "$f" | tr ':' '-'); done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
         if: ${{ always() }}
