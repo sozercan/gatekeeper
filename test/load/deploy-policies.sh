@@ -1,7 +1,7 @@
 #!/bin/bash
 set -x
 
-source ../bats/helpers.bash
+source test/bats/helpers.bash
 
 WAIT_TIME=120
 SLEEP_TIME=1
