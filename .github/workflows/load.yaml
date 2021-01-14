@@ -51,7 +51,6 @@ jobs:
 
       - name: Run load tests
         run: |
-          export POD_COUNT=10
           ./run-e2e.sh cluster-loader2 \
             --nodes=1 \
             --provider=local \
@@ -59,9 +58,9 @@ jobs:
             --testconfig="$GITHUB_WORKSPACE/test/load/config-template.yaml"
         working-directory: perf-tests
         env:
-          POD_COUNT: 10
-          POD_THROUGHPUT: 5
-          WAIT_TIME: 1m
+          CL2_POD_COUNT: 10
+          CL2_POD_THROUGHPUT: 5
+          CL2_WAIT_TIME: 1m
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
