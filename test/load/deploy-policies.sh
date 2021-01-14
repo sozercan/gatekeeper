@@ -1,38 +1,18 @@
 #!/bin/bash
 set -x
 
-WAIT_TIME=240
-SLEEP_TIME=5
+source ../bats/helpers.bash
 
-wait_for_process() {
-    wait_time="$1"
-    sleep_time="$2"
-    cmd="$3"
-    while [ "$wait_time" -gt 0 ]; do
-        if eval "$cmd"; then
-            return 0
-        else
-            sleep "$sleep_time"
-            wait_time=$((wait_time - sleep_time))
-        fi
-    done
-    return 1
-}
+WAIT_TIME=120
+SLEEP_TIME=1
 
-compare_generation() {
-    kind="$1"
-    constraint="$2"
+wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl wait -n gatekeeper-system --for=condition=Ready --timeout=60s pod -l control-plane=audit-controller"
 
-    [[ "$(kubectl get ${kind}.constraints.gatekeeper.sh ${constraint} -o json | jq '.status.byPod[0].observedGeneration')" = "$(kubectl get ${kind}.constraints.gatekeeper.sh ${constraint} -o json | jq '.metadata.generation')" ]]
-}
+wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl wait -n gatekeeper-system --for=condition=Ready --timeout=60s pod -l control-plane=controller-manager"
 
-wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait -n gatekeeper-system --for=condition=Ready --timeout=60s pod -l control-plane=audit-controller"
+wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl wait --for condition=established --timeout=60s crd/constrainttemplates.templates.gatekeeper.sh"
 
-wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait -n gatekeeper-system --for=condition=Ready --timeout=60s pod -l control-plane=controller-manager"
-
-wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait --for condition=established --timeout=60s crd/constrainttemplates.templates.gatekeeper.sh"
-
-wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait --for condition=established --timeout=60s crd/configs.config.gatekeeper.sh"
+wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl wait --for condition=established --timeout=60s crd/configs.config.gatekeeper.sh"
 
 # deploying templates
 t="1"
@@ -43,7 +23,7 @@ while [ $t -le $NUMBER_TEMPLATES ]; do
 
     kubectl apply -f test/load/allowedrepos-ct.yaml
 
-    wait_for_process $WAIT_TIME $SLEEP_TIME "kubectl wait --for condition=established --timeout=60s crd/$TEMPLATE_NAME.constraints.gatekeeper.sh"
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl wait --for condition=established --timeout=60s crd/$TEMPLATE_NAME.constraints.gatekeeper.sh"
 
     t=$(($t + 1))
 
@@ -56,7 +36,7 @@ while [ $t -le $NUMBER_TEMPLATES ]; do
 
         kubectl apply -f test/load/allowedrepos-constraint.yaml
 
-        wait_for_process $WAIT_TIME $SLEEP_TIME "compare_generation $TEMPLATE_NAME $CONSTRAINT_NAME"
+        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "constraint_enforced $TEMPLATE_NAME $CONSTRAINT_NAME"
 
         c=$(($c + 1))
     done
