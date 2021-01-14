@@ -1,12 +1,29 @@
 name: load_test
 on: [push, pull_request]
+# on:
+#   issue_comment:
+#     types: [created]
 
 jobs:
+  # trigger:
+  #   name: Trigger load test
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: khan/pull-request-comment-trigger@1.0.0
+  #       id: check
+  #       with:
+  #         trigger: '/runLoadTest'
+  #         reaction: rocket
+  #       env:
+  #         GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+
   load_test:
     name: "Load test"
     runs-on: ubuntu-latest
+    # needs: trigger
     timeout-minutes: 30
     steps:
+
       - name: Check out code into the Go module directory
         uses: actions/checkout@v2
 
@@ -27,10 +44,14 @@ jobs:
 
       - name: Deploy policies
         run: |
-          export NUMBER_TEMPLATES=5
-          export NUMBER_CONSTRAINTS=5
           ./test/load/deploy-policies.sh
           envsubst < test/load/config-template.yaml > test/load/config.yaml
+        env:
+          NUMBER_TEMPLATES: 5
+          NUMBER_CONSTRAINTS: 5
+          POD_COUNT: 10
+          QPS: 5
+          WAIT_TIME: 5m
 
       - name: Run load tests
         run: |
