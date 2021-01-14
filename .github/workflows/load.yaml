@@ -65,6 +65,7 @@ jobs:
       - name: Fix invalid characters
         run: |
           for f in *:*; do mv -v "$f" $(echo "$f" | tr ':' '-'); done
+        working-directory: $GITHUB_WORKSPACE/_artifacts
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
