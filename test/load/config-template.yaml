@@ -1,9 +1,15 @@
-name: gatekeeper-pod
-automanagedNamespaces: $POD_COUNT
+{{$POD_COUNT := DefaultParam .POD_COUNT 100}}
+{{$POD_THROUGHPUT := DefaultParam .POD_THROUGHPUT 5}}
+{{$CONTAINER_IMAGE := DefaultParam .CONTAINER_IMAGE "k8s.gcr.io/pause:3.1"}}
+{{$OPERATION_TIMEOUT := DefaultParam .OPERATION_TIMEOUT "15m"}}
+{{$WAIT_TIME := DefaultParam .WAIT_TIME "1m"}}
+
+name: load-test
+automanagedNamespaces: {{$POD_COUNT}}
 tuningSets:
   - name: UniformQPS
     qpsLoad:
-      qps: $QPS
+      qps: {{$POD_THROUGHPUT}}
 steps:
   - name: Starting measurements
     measurements:
@@ -20,11 +26,11 @@ steps:
           apiVersion: v1
           kind: ReplicationController
           labelSelector: group = latency
-          operationTimeout: 15m
+          operationTimeout: {{$OPERATION_TIMEOUT}}
   - phases:
       - namespaceRange:
           min: 1
-          max: $POD_COUNT
+          max: {{$POD_COUNT}}
         replicasPerNamespace: 1
         tuningSet: UniformQPS
         objectBundle:
@@ -43,7 +49,7 @@ steps:
       - Identifier: Wait
         Method: Sleep
         Params:
-          duration: $WAIT_TIME
+          duration: {{$WAIT_TIME}}
   - measurements:
       - Identifier: ResourceUsageSummary
         Method: ResourceUsageSummary

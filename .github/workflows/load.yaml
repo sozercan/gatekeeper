@@ -45,13 +45,12 @@ jobs:
       - name: Deploy policies
         run: |
           ./test/load/deploy-policies.sh
-          envsubst < test/load/config-template.yaml > test/load/config.yaml
         env:
           NUMBER_TEMPLATES: 5
           NUMBER_CONSTRAINTS: 5
           POD_COUNT: 10
-          QPS: 5
-          WAIT_TIME: 5m
+          POD_THROUGHPUT: 5
+          WAIT_TIME: 1m
 
       - name: Run load tests
         run: |
@@ -59,7 +58,7 @@ jobs:
             --nodes=1 \
             --provider=local \
             --report-dir="$GITHUB_WORKSPACE/_artifacts" \
-            --testconfig="$GITHUB_WORKSPACE/test/load/config.yaml"
+            --testconfig="$GITHUB_WORKSPACE/test/load/config-template.yaml"
         working-directory: perf-tests
 
       - name: Upload artifacts
@@ -69,3 +68,20 @@ jobs:
           name: load_test_results
           path: |
             _artifacts/*.json
+
+      # - name: Comment results on PR
+      #   env:
+      #     URL: ${{ github.event.issue.comments_url }}
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     echo "Scale [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) results:" > comment.txt
+      #     echo "\`\`\`" >> comment.txt
+      #     cat ./tests/scale/testResults/results.txt >> comment.txt
+      #     echo "\`\`\`" >> comment.txt
+      #     echo "{ \"body\" : $(cat comment.txt | jq -sR)}" > proto.json
+      #     curl \
+      #       -X POST \
+      #       $URL \
+      #       -H "Content-Type: text/json" \
+      #       -H "Authorization: token $GITHUB_TOKEN" \
+      #       -d @proto.json
