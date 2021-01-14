@@ -48,9 +48,6 @@ jobs:
         env:
           NUMBER_TEMPLATES: 5
           NUMBER_CONSTRAINTS: 5
-          POD_COUNT: 10
-          POD_THROUGHPUT: 5
-          WAIT_TIME: 1m
 
       - name: Run load tests
         run: |
@@ -60,6 +57,10 @@ jobs:
             --report-dir="$GITHUB_WORKSPACE/_artifacts" \
             --testconfig="$GITHUB_WORKSPACE/test/load/config-template.yaml"
         working-directory: perf-tests
+        env:
+          POD_COUNT: 10
+          POD_THROUGHPUT: 5
+          WAIT_TIME: 1m
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
