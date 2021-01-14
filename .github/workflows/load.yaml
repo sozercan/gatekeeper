@@ -77,6 +77,11 @@ jobs:
           path: |
             _artifacts/*.json
 
+      - name: output
+        run: |
+          cat $GITHUB_WORKSPACE/_artifacts/*.json | jq -r '["NAME","CPU","MEMORY"], ["----","---","------"], (."100"[] | select((.Name | startswith("gatekeeper")) or (.Name | startswith("kube-apiserver"))) | [.Name, .CPU, .Mem]) | @tsv' | column -t > results.txt
+          cat results.txt
+
       # - name: Comment results
       #   env:
       #     URL: ${{ github.event.issue.comments_url }}
