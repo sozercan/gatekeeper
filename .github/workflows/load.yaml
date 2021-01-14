@@ -68,4 +68,4 @@ jobs:
         with:
           name: load_test_results
           path: |
-            _artifact/*.json
+            _artifacts/*.json
