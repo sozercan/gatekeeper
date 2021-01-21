@@ -182,12 +182,28 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 	res := resp.Results()
 	msgs := h.getDenyMessages(res, req)
 	if len(msgs) > 0 {
-		vResp := admission.ValidationResponse(false, strings.Join(msgs, "\n"))
+		var vResp admission.Response
 		if vResp.Result == nil {
 			vResp.Result = &metav1.Status{}
 		}
-		vResp.Result.Code = http.StatusForbidden
-		requestResponse = denyResponse
+
+		log.Info("***", "RES", res, "RES[0]", res[0])
+
+		// if res[0].EnforcementAction == string(util.Warn) {
+			vResp = admission.ValidationResponse(true, strings.Join(msgs, "\n"))
+			vResp.Warnings = msgs
+			vResp.Result.Code = 299
+			requestResponse = allowResponse
+
+			log.Info("*** vResp1", "vResp", vResp, "MSGS", msgs)
+		// } else {
+		// 	vResp = admission.ValidationResponse(false, strings.Join(msgs, "\n"))
+		// 	vResp.Result.Code = http.StatusForbidden
+		// 	requestResponse = denyResponse
+
+		// 	log.Info("*** vResp2", "vResp", vResp, "MSGS", msgs)
+
+		// }
 		return vResp
 	}
 
@@ -210,7 +226,7 @@ func (h *validationHandler) getDenyMessages(res []*rtypes.Result, req admission.
 		}
 	}
 	for _, r := range res {
-		if r.EnforcementAction == "deny" || r.EnforcementAction == "dryrun" {
+		if r.EnforcementAction == string(util.Deny) || r.EnforcementAction == string(util.Dryrun) {
 			if *logDenies {
 				log.WithValues(
 					logging.Process, "admission",
@@ -246,17 +262,16 @@ func (h *validationHandler) getDenyMessages(res []*rtypes.Result, req admission.
 				}
 				eventMsg := "Admission webhook \"validation.gatekeeper.sh\" denied request"
 				reason := "FailedAdmission"
-				if r.EnforcementAction == "dryrun" {
+				if r.EnforcementAction == string(util.Dryrun) {
 					eventMsg = "Dryrun violation"
 					reason = "DryrunViolation"
 				}
 				ref := getViolationRef(h.gkNamespace, req.AdmissionRequest.Kind.Kind, resourceName, req.AdmissionRequest.Namespace, r.Constraint.GetKind(), r.Constraint.GetName(), r.Constraint.GetNamespace())
 				h.eventRecorder.AnnotatedEventf(ref, annotations, corev1.EventTypeWarning, reason, "%s, Resource Namespace: %s, Constraint: %s, Message: %s", eventMsg, req.AdmissionRequest.Namespace, r.Constraint.GetName(), r.Msg)
 			}
-
 		}
 		// only deny enforcementAction should prompt deny admission response
-		if r.EnforcementAction == "deny" {
+		if r.EnforcementAction == string(util.Deny) || r.EnforcementAction == string(util.Warn) {
 			msgs = append(msgs, fmt.Sprintf("[denied by %s] %s", r.Constraint.GetName(), r.Msg))
 		}
 	}
@@ -326,7 +341,7 @@ func (h *validationHandler) validateConstraint(ctx context.Context, req admissio
 
 func (h *validationHandler) validateConfigResource(ctx context.Context, req admission.Request) error {
 	if req.Name != keys.Config.Name {
-		return fmt.Errorf("Config resource must have name 'config'")
+		return fmt.Errorf("config resource must have name 'config'")
 	}
 	return nil
 }
