@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - readme-cleanup
     paths:
       - ".github/workflows/website.yaml"
       - "website/**"
