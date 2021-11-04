@@ -3,17 +3,17 @@ name: generate_website
 on:
   push:
     branches:
-      - master
-    paths:
-      - ".github/workflows/website.yaml"
-      - "website/**"
+      - main
+      - release-*
 
 permissions:
   contents: write
 
 jobs:
-  deploy:
+  deploy-next:
+    name: "vNext release"
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && github.repository == 'sozercan/gatekeeper'
     defaults:
       run:
         working-directory: website
@@ -38,6 +38,51 @@ jobs:
             ${{ runner.os }}-website-
 
       - run: yarn install --frozen-lockfile
+      - run: yarn build
+
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3.8.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./website/build
+          destination_dir: ./website
+
+  deploy-version:
+    name: "versioned release"
+    runs-on: "ubuntu-latest"
+    if: startsWith(github.ref, 'refs/heads/release-') && github.event_name == 'push' && github.repository == 'sozercan/gatekeeper'
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v2.4.1
+        with:
+          node-version: "16"
+
+      - name: Get yarn cache
+        id: yarn-cache
+        run: echo "::set-output name=dir::$(yarn cache dir)"
+
+      - name: Cache dependencies
+        uses: actions/cache@v2.1.6
+        with:
+          path: ${{ steps.yarn-cache.outputs.dir }}
+          key: ${{ runner.os }}-website-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-website-
+
+      - run: yarn install --frozen-lockfile
+
+      - run: echo "BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+      - name: Version docs
+        run: |
+          VERSION=$(echo ${BRANCH} | cut -d "-" -f2)
+          VERSION+=".x"
+          yarn run docusaurus docs:version ${VERSION}
+
       - run: yarn build
 
       - name: Deploy
