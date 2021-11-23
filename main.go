@@ -268,7 +268,10 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 		setupLog.Error(err, "unable to set up OPA client")
 	}
 
-	mutationSystem := mutation.NewSystem(mutation.SystemOpts{Reporter: mutation.NewStatsReporter()})
+	mutationSystem := mutation.NewSystem(mutation.SystemOpts{
+		Reporter:      mutation.NewStatsReporter(),
+		ProviderCache: providerCache,
+	})
 
 	c := mgr.GetCache()
 	dc, ok := c.(watch.RemovableCache)

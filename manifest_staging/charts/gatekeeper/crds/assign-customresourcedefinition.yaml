@@ -377,6 +377,29 @@ spec:
                   assign:
                     description: Assign.value holds the value to be assigned
                     properties:
+                      externalData:
+                        description: ExternalData assign a value from an external data provider.
+                        properties:
+                          dataSource:
+                            description: DataSource represents external data source type for mutation.
+                            enum:
+                            - valueAtLocation
+                            - username
+                            type: string
+                          default:
+                            description: Default is the value to use if failure policy is set to UseDefault
+                            type: string
+                          failurePolicy:
+                            description: FailurePolicy specifies the policy for handling external data failures.
+                            enum:
+                            - UseDefault
+                            - Fail
+                            - Ignore
+                            type: string
+                          provider:
+                            description: Provider is the name of the external data provider.
+                            type: string
+                        type: object
                       fromMetadata:
                         description: FromMetadata assigns a value from the specified metadata field.
                         properties:

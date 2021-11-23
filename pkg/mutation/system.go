@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
 	"github.com/open-policy-agent/gatekeeper/pkg/mutation/schema"
 	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
 	"github.com/pkg/errors"
@@ -28,12 +29,14 @@ type System struct {
 	mux             sync.RWMutex
 	reporter        StatsReporter
 	newUUID         func() uuid.UUID
+	providerCache   *externaldata.ProviderCache
 }
 
 // SystemOpts allows for optional dependencies to be passed into the mutation System.
 type SystemOpts struct {
-	Reporter StatsReporter
-	NewUUID  func() uuid.UUID
+	Reporter      StatsReporter
+	NewUUID       func() uuid.UUID
+	ProviderCache *externaldata.ProviderCache
 }
 
 // NewSystem initializes an empty mutation system.
@@ -48,6 +51,7 @@ func NewSystem(options SystemOpts) *System {
 		mutatorsMap:     make(map[types.ID]types.Mutator),
 		reporter:        options.Reporter,
 		newUUID:         options.NewUUID,
+		providerCache:   options.ProviderCache,
 	}
 }
 
