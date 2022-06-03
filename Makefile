@@ -1,7 +1,7 @@
 # Image URL to use all building/pushing image targets
-REPOSITORY ?= openpolicyagent/gatekeeper
-CRD_REPOSITORY ?= openpolicyagent/gatekeeper-crds
-GATOR_REPOSITORY ?= openpolicyagent/gator
+REPOSITORY ?= sozercan/gatekeeper
+CRD_REPOSITORY ?= sozercan/gatekeeper-crds
+GATOR_REPOSITORY ?= sozercan/gator
 IMG := $(REPOSITORY):latest
 CRD_IMG := $(CRD_REPOSITORY):latest
 GATOR_IMG := $(GATOR_REPOSITORY):latest
@@ -360,14 +360,14 @@ docker-buildx-crds-release: build-crds docker-buildx-builder
 		-f crd.Dockerfile .staging/crds/ --push
 
 # Build gator image
-docker-buildx-gator-dev:
-	docker buildx build --build-arg LDFLAGS=${LDFLAGS} --platform "linux/amd64,linux/arm64,linux/arm/v6"\
+docker-buildx-gator-dev: docker-buildx-builder
+	docker buildx build --build-arg LDFLAGS=${LDFLAGS} --platform "linux/amd64,linux/arm64,linux/arm/v7" \
 		-t ${GATOR_REPOSITORY}:${DEV_TAG} \
 		-t ${GATOR_REPOSITORY}:dev \
 		-f gator.Dockerfile . --push
 
-docker-buildx-gator-release:
-	docker buildx build --build-arg LDFLAGS=${LDFLAGS} --platform "linux/amd64,linux/arm64,linux/arm/v6"\
+docker-buildx-gator-release: docker-buildx-builder
+	docker buildx build --build-arg LDFLAGS=${LDFLAGS} --platform "linux/amd64,linux/arm64,linux/arm/v7" \
 		-t ${GATOR_REPOSITORY}:${VERSION} \
 		-f gator.Dockerfile . --push
 
@@ -384,6 +384,7 @@ endif
 docker-push:
 	docker push ${IMG}
 	docker push ${CRD_IMG}
+	docker push ${GATOR_IMG}
 
 release-manifest:
 	@sed -i -e 's/^VERSION := .*/VERSION := ${NEWVERSION}/' ./Makefile
