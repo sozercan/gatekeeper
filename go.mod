@@ -32,6 +32,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.12.1
 	github.com/spf13/cobra v1.4.0
+	github.com/tetratelabs/wazero v1.0.0-pre.1
 	go.opencensus.io v0.23.0
 	go.uber.org/zap v1.19.1
 	golang.org/x/net v0.0.0-20220401154927-543a649e0bdd

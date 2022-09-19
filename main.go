@@ -48,6 +48,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/pkg/upgrade"
 	"github.com/open-policy-agent/gatekeeper/pkg/util"
 	"github.com/open-policy-agent/gatekeeper/pkg/version"
+	"github.com/open-policy-agent/gatekeeper/pkg/wasm"
 	"github.com/open-policy-agent/gatekeeper/pkg/watch"
 	"github.com/open-policy-agent/gatekeeper/pkg/webhook"
 	"github.com/open-policy-agent/gatekeeper/third_party/sigs.k8s.io/controller-runtime/pkg/dynamiccache"
@@ -268,13 +269,13 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 		mutationOpts.ProviderCache = providerCache
 	}
 	// initialize OPA
-	driver, err := local.New()
-	if err != nil {
-		setupLog.Error(err, "unable to set up Driver")
-		os.Exit(1)
-	}
+	// driver, err := local.New()
+	// if err != nil {
+	// 	setupLog.Error(err, "unable to set up Driver")
+	// 	os.Exit(1)
+	// }
 
-	drivers := constraintclient.Driver(golangdriver.NewDriver(), driver, cel.NewDriver())
+	drivers := constraintclient.Driver(golangdriver.NewDriver(), cel.NewDriver(), wasm.NewDriver())
 
 	client, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), drivers)
 	if err != nil {
