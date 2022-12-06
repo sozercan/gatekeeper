@@ -105,6 +105,7 @@ type updateListEntry struct {
 	name              string
 	msg               string
 	enforcementAction util.EnforcementAction
+	annotations       map[string]string
 }
 
 // nsCache is used for caching namespaces and their labels.
@@ -234,7 +235,7 @@ func (am *Manager) audit(ctx context.Context) error {
 	// log constraints with violations
 	for gvknn := range updateLists {
 		ar := updateLists[gvknn][0]
-		logConstraint(am.log, &gvknn, ar.enforcementAction, totalViolationsPerConstraint[gvknn])
+		logConstraint(am.log, &gvknn, ar.enforcementAction, ar.annotations, totalViolationsPerConstraint[gvknn])
 	}
 
 	for k, v := range totalViolationsPerEnforcementAction {
@@ -749,6 +750,7 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 				name:              name,
 				msg:               msg,
 				enforcementAction: ea,
+				annotations:       r.obj.GetAnnotations(),
 			}
 			updateLists[key] = append(updateLists[key], entry)
 		}
@@ -995,7 +997,11 @@ func logFinish(l logr.Logger) {
 	)
 }
 
-func logConstraint(l logr.Logger, gvknn *util.KindVersionName, enforcementAction util.EnforcementAction, totalViolations int64) {
+func logConstraint(l logr.Logger,
+	gvknn *util.KindVersionName,
+	enforcementAction util.EnforcementAction,
+	annotations map[string]string,
+	totalViolations int64) {
 	l.Info(
 		"audit results for constraint",
 		logging.EventType, "constraint_audited",
@@ -1007,12 +1013,17 @@ func logConstraint(l logr.Logger, gvknn *util.KindVersionName, enforcementAction
 		logging.ConstraintAction, enforcementAction,
 		logging.ConstraintStatus, "enforced",
 		logging.ConstraintViolations, strconv.FormatInt(totalViolations, 10),
+		logging.ConstraintAnnotations, annotations,
 	)
 }
 
 func logViolation(l logr.Logger,
 	constraint *unstructured.Unstructured,
-	enforcementAction util.EnforcementAction, resourceGroupVersionKind schema.GroupVersionKind, rnamespace, rname, message string, details interface{}, rlabels map[string]string,
+	enforcementAction util.EnforcementAction,
+	resourceGroupVersionKind schema.GroupVersionKind,
+	rnamespace, rname, message string,
+	details interface{},
+	rlabels map[string]string,
 ) {
 	l.Info(
 		message,
@@ -1024,6 +1035,7 @@ func logViolation(l logr.Logger,
 		logging.ConstraintName, constraint.GetName(),
 		logging.ConstraintNamespace, constraint.GetNamespace(),
 		logging.ConstraintAction, enforcementAction,
+		logging.ConstraintAnnotations, constraint.GetAnnotations(),
 		logging.ResourceGroup, resourceGroupVersionKind.Group,
 		logging.ResourceAPIVersion, resourceGroupVersionKind.Version,
 		logging.ResourceKind, resourceGroupVersionKind.Kind,
