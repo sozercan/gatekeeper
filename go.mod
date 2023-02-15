@@ -16,7 +16,7 @@ require (
 	github.com/open-policy-agent/frameworks/constraint v0.0.0-20211025234246-f478d8a555b5
 	github.com/open-policy-agent/opa v0.29.4
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus/client_golang v1.11.0
+	github.com/prometheus/client_golang v1.11.1
 	github.com/prometheus/common v0.30.0 // indirect
 	github.com/prometheus/procfs v0.7.1 // indirect
 	github.com/prometheus/statsd_exporter v0.21.0 // indirect
