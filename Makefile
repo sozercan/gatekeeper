@@ -1,7 +1,7 @@
 # Image URL to use all building/pushing image targets
-REPOSITORY ?= openpolicyagent/gatekeeper
-CRD_REPOSITORY ?= openpolicyagent/gatekeeper-crds
-GATOR_REPOSITORY ?= openpolicyagent/gator
+REPOSITORY ?= sozercan/gatekeeper
+CRD_REPOSITORY ?= sozercan/gatekeeper-crds
+GATOR_REPOSITORY ?= sozercan/gator
 IMG := $(REPOSITORY):latest
 CRD_IMG := $(CRD_REPOSITORY):latest
 GATOR_IMG := $(GATOR_REPOSITORY):latest
@@ -364,7 +364,7 @@ endif
 
 # Docker Login
 docker-login:
-	@docker login -u $(DOCKER_USER) -p $(DOCKER_PASSWORD) $(REGISTRY)
+	@docker login -u $(DOCKER_USER) -p $(DOCKER_PASSWORD)
 
 docker-build: docker-buildx
 
