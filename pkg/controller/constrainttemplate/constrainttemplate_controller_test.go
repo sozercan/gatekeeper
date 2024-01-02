@@ -51,13 +51,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
-func makeReconcileConstraintTemplate(suffix string) *v1beta1.ConstraintTemplate {
+func makeReconcileConstraintTemplate(suffix string, useVap map[string]string) *v1beta1.ConstraintTemplate {
 	return &v1beta1.ConstraintTemplate{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ConstraintTemplate",
 			APIVersion: templatesv1.SchemeGroupVersion.String(),
 		},
-		ObjectMeta: metav1.ObjectMeta{Name: "denyall" + strings.ToLower(suffix)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "denyall" + strings.ToLower(suffix),
+			Labels: useVap,
+		},
 		Spec: v1beta1.ConstraintTemplateSpec{
 			CRD: v1beta1.CRD{
 				Spec: v1beta1.CRDSpec{
@@ -155,7 +158,7 @@ func TestReconcile(t *testing.T) {
 		suffix := "CRDGetsCreated"
 
 		logger.Info("Running test: CRD Gets Created")
-		constraintTemplate := makeReconcileConstraintTemplate(suffix)
+		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
 		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
 		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
 
@@ -183,11 +186,25 @@ func TestReconcile(t *testing.T) {
 		}
 	})
 
+	t.Run("Vap gets created", func(t *testing.T) {
+		suffix := "VapGetsCreated"
+
+		logger.Info("Running test: Vap Gets Created")
+		labels := map[string]string{
+			VapGenerationLabel: "yes",
+		}
+		constraintTemplate := makeReconcileConstraintTemplate(suffix, labels)
+		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
+		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
+
+		// TODO(ritazh): validate creation of vap resources
+	})
+
 	t.Run("Constraint is marked as enforced", func(t *testing.T) {
 		suffix := "MarkedEnforced"
 
 		logger.Info("Running test: Constraint is marked as enforced")
-		constraintTemplate := makeReconcileConstraintTemplate(suffix)
+		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
 		cstr := newDenyAllCstr(suffix)
 
 		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
@@ -241,7 +258,7 @@ func TestReconcile(t *testing.T) {
 
 		logger.Info("Running test: Deleted constraint CRDs are recreated")
 		// Clean up to remove the crd, constraint and constraint template
-		constraintTemplate := makeReconcileConstraintTemplate(suffix)
+		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
 		cstr := newDenyAllCstr(suffix)
 
 		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
@@ -429,7 +446,7 @@ func TestReconcile(t *testing.T) {
 			t.Fatalf("did not get 0 results: %v", gotResults)
 		}
 
-		constraintTemplate := makeReconcileConstraintTemplate(suffix)
+		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
 		err = c.Delete(ctx, constraintTemplate)
 		if err != nil && !apierrors.IsNotFound(err) {
 			t.Fatal(err)

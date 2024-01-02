@@ -64,6 +64,30 @@ var gvkConstraintTemplate = schema.GroupVersionKind{
 	Kind:    "ConstraintTemplate",
 }
 
+var VapEnforcement VapFlagType
+
+// VapFlagType is the custom type for the vap-enforcement flag
+type VapFlagType string
+
+// Allowed values for VapFlagType
+var allowedVapFlagVals = []string{VapFlagNone, VapFlagGatekeeperDefault, VapFlagVapDefault}
+
+// String returns the string representation of the flag value
+func (v *VapFlagType) String() string {
+	return string(*v)
+}
+
+// Set validates and sets the value for the VapFlagType
+func (v *VapFlagType) Set(value string) error {
+	for _, val := range allowedVapFlagVals {
+		if val == value {
+			*v = VapFlagType(value)
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid value %s. Allowed values are %s, %s, %s", value, VapFlagNone, VapFlagGatekeeperDefault, VapFlagVapDefault)
+}
+
 type Adder struct {
 	CFClient         *constraintclient.Client
 	WatchManager     *watch.Manager
@@ -237,8 +261,10 @@ type ReconcileConstraintTemplate struct {
 	metrics       *reporter
 	tracker       *readiness.Tracker
 	getPod        func(context.Context) (*corev1.Pod, error)
+	generateVap   bool
 }
 
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=templates.gatekeeper.sh,resources=constrainttemplates,verbs=get;list;watch;create;update;patch;delete
 // TODO(acpana): remove in 3.16 as per https://github.com/open-policy-agent/gatekeeper/issues/3084
@@ -271,6 +297,20 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 		}
 		deleted = true
 	}
+	labels := ct.GetLabels()
+	logger.Info("constraint template resource", "labels", labels)
+	useVap, ok := labels[VapGenerationLabel]
+	if !ok {
+		logger.Info("constraint template resource does not have a label for use-vap; will default to flag behavior", "VapEnforcement", VapEnforcement)
+		r.generateVap = getGenerateVap("")
+	} else {
+		logger.Info("constraint template resource", "useVap", useVap)
+		r.generateVap = getGenerateVap(useVap)
+		if useVap != "no" && useVap != "yes" {
+			logger.Error(fmt.Errorf("constraint template resource has an invalid value for %s, allowed values are yes and no", VapGenerationLabel), "constraint template resource has an invalid label value")
+		}
+	}
+
 	deleted = deleted || !ct.GetDeletionTimestamp().IsZero()
 
 	if deleted {
@@ -314,6 +354,15 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 		r.metrics.registry.add(request.NamespacedName, metrics.ErrorStatus)
 		logError(request.NamespacedName.Name)
 		return reconcile.Result{}, err
+	}
+	if r.generateVap {
+		// TODO(ritazh): Need to wire r.generateVap up with TemplateToPolicyDefinition in framework, add ownerRef, and handle updates
+
+		// placeholder error
+		err = fmt.Errorf("could not create vap object")
+
+		createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
+		status.Status.Errors = append(status.Status.Errors, createErr)
 	}
 
 	unversionedProposedCRD, err := r.cfClient.CreateCRD(ctx, unversionedCT)
@@ -399,11 +448,11 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 	name := proposedCRD.GetName()
 	logger := logger.WithValues("name", ct.GetName(), "crdName", name)
 
-	logger.Info("loading code into OPA")
+	logger.Info("loading code into rule engine")
 	beginCompile := time.Now()
 
 	// It's important that cfClient.AddTemplate() is called first. That way we can
-	// rely on a template's existence in OPA to know whether a watch needs
+	// rely on a template's existence in rule engine to know whether a watch needs
 	// to be removed
 	if _, err := r.cfClient.AddTemplate(ctx, unversionedCT); err != nil {
 		if err := r.metrics.reportIngestDuration(ctx, metrics.ErrorStatus, time.Since(beginCompile)); err != nil {
@@ -594,4 +643,14 @@ func makeGvk(kind string) schema.GroupVersionKind {
 		Version: "v1beta1",
 		Kind:    kind,
 	}
+}
+
+func getGenerateVap(useVapLabel string) bool {
+	if VapEnforcement == VapFlagGatekeeperDefault {
+		return useVapLabel == "yes"
+	}
+	if VapEnforcement == VapFlagVapDefault {
+		return useVapLabel != "no"
+	}
+	return false
 }

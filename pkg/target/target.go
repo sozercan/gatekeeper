@@ -22,7 +22,8 @@ import (
 const Name = "admission.k8s.gatekeeper.sh"
 
 type K8sValidationTarget struct {
-	cache nsCache
+	cache             nsCache
+	isCallerAdmission bool
 }
 
 var (
@@ -73,6 +74,22 @@ func (h *K8sValidationTarget) ProcessData(obj interface{}) (bool, []string, inte
 	default:
 		return false, nil, nil, nil
 	}
+}
+
+func (h *K8sValidationTarget) IsCallerAdmission(obj interface{}) bool {
+	switch obj.(type) {
+	case admissionv1.AdmissionRequest:
+		h.isCallerAdmission = true
+	case *admissionv1.AdmissionRequest:
+		h.isCallerAdmission = true
+	case AugmentedReview:
+		h.isCallerAdmission = true
+	case *AugmentedReview:
+		h.isCallerAdmission = true
+	default:
+		h.isCallerAdmission = false
+	}
+	return h.isCallerAdmission
 }
 
 func (h *K8sValidationTarget) HandleReview(obj interface{}) (bool, interface{}, error) {
