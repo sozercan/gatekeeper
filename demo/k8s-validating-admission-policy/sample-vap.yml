@@ -1,0 +1,60 @@
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ritak8srequiredlabels
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: "\n\t!has(params.spec) ? true: (\n\t\t!has(params.spec.match) ? true:
+      (\n\t\t\t!has(params.spec.match.excludedNamespaces) ? true : (\n\t\t\t\t\t//
+      cluster-scoped objects always match\n\t\t\t\t\t!has(object.metadata.namespace)
+      || object.metadata.namespace == \"\" ? true : (\n\t\t\t\t\t\t!params.spec.match.excludedNamespaces.exists(nsMatcher,\n\t\t\t\t\t\t\t(string(object.metadata.namespace).matches(\"^\"
+      + string(nsMatcher).replace(\"*\", \".*\") + \"$\"))\n\t\t\t\t\t\t)\n\t\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n\t"
+    name: gatekeeper_internal_match_excluded_namespaces
+  - expression: "\n\t!has(params.spec) ? true: (\n\t\t!has(params.spec.match) ? true:
+      (\n\t\t\t!has(params.spec.match.namespaces) ? true : (\n\t\t\t\t// cluster-scoped
+      objects always match\n\t\t\t\t!has(object.metadata.namespace) || object.metadata.namespace
+      == \"\" ? true : (\n\t\t\t\t\tparams.spec.match.namespaces.exists(nsMatcher,\n\t\t\t\t\t\t(string(object.metadata.namespace).matches(\"^\"
+      + string(nsMatcher).replace(\"*\", \".*\") + \"$\"))\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n\t"
+    name: gatekeeper_internal_match_namespaces
+  - expression: "\n\t!has(params.spec) ? true: (\n\t\t!has(params.spec.match) ? true:
+      (\n\t\t\t!has(params.spec.match.name) ? true : (\n\t\t\t\t(has(object.metadata.generateName)
+      && object.metadata.generateName != \"\" && params.spec.match.name.endsWith(\"*\")
+      && string(object.metadata.generateName).matches(\"^\" + string(params.spec.match.name).replace(\"*\",
+      \".*\") + \"$\")) ||\n\t\t\t\t(has(object.metadata.name) && string(object.metadata.name).matches(\"^\"
+      + string(params.spec.match.name).replace(\"*\", \".*\") + \"$\"))\n\t\t\t)\n\t\t)\n\t)\n\t"
+    name: gatekeeper_internal_match_name
+  - expression: "\n\t!has(params.spec) ? true: (\n\t\t!has(params.spec.match) ? true:
+      (\n\t\t\t!has(params.spec.match.kinds) ? true : (\n\t\t\t\tparams.spec.match.kinds.exists(groupskinds,\n\t\t\t\t\t(!has(groupskinds.kinds)
+      || size(groupskinds.kinds) == 0 || \"*\" in groupskinds.kinds || request.kind.kind
+      in groupskinds.kinds) &&\n\t\t\t\t\t(!has(groupskinds.apiGroups) || size(groupskinds.apiGroups)
+      == 0 || \"*\" in groupskinds.apiGroups || request.kind.group in groupskinds.apiGroups)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n\t"
+    name: gatekeeper_internal_match_kinds
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ""
+      apiVersions:
+      - '*'
+      operations:
+      - '*'
+      resources:
+      - namespaces
+      scope: '*'
+  paramKind:
+    apiVersion: constraints.gatekeeper.sh/v1beta1
+    kind: K8sRequiredLabels
+  validations:
+  - expression: variables.params.labels.all(entry, has(object.metadata.labels) &&
+      entry.key in object.metadata.labels)
+    messageExpression: '"missing required label, requires all of: " + variables.params.labels.map(entry,
+      entry.key).join(", ")'
+  - expression: '!variables.params.labels.exists(entry, has(object.metadata.labels)
+      && entry.key in object.metadata.labels && !string(object.metadata.labels[entry.key]).matches(string(entry.allowedRegex)))'
+    message: regex mismatch
+  variables:
+  - expression: params.spec.parameters
+    name: params

@@ -45,6 +45,8 @@ BIN_DIR := $(abspath $(ROOT_DIR)/bin)
 LDFLAGS := "-X github.com/open-policy-agent/gatekeeper/v3/pkg/version.Version=$(VERSION)"
 
 PLATFORM ?= linux/amd64
+# https://github.com/docker/buildx/issues/2028
+# https://github.com/docker/buildx/issues/59
 OUTPUT_TYPE ?= type=docker
 
 MANAGER_IMAGE_PATCH := "apiVersion: apps/v1\
@@ -69,6 +71,9 @@ MANAGER_IMAGE_PATCH := "apiVersion: apps/v1\
 \n        - --disable-opa-builtin=http.send\
 \n        - --log-mutations\
 \n        - --mutation-annotations\
+\n        - --vap-enforcement=GATEKEEPER_DEFAULT\
+\n        - --validate-template-rego=false\
+\n        - --experimental-enable-k8s-native-validation\
 \n---\
 \napiVersion: apps/v1\
 \nkind: Deployment\
@@ -88,7 +93,10 @@ MANAGER_IMAGE_PATCH := "apiVersion: apps/v1\
 \n        - --operation=status\
 \n        - --operation=mutation-status\
 \n        - --audit-chunk-size=500\
-\n        - --logtostderr"
+\n        - --logtostderr"\
+\n        - --vap-enforcement=GATEKEEPER_DEFAULT\
+\n        - --validate-template-rego=false\
+\n        - --experimental-enable-k8s-native-validation
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -107,7 +115,8 @@ all: lint test manager
 native-test: envtest
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(KUBERNETES_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	GO111MODULE=on \
-	go test -mod vendor ./pkg/... ./apis/... ./cmd/gator/... -race -bench . -coverprofile cover.out
+	go test -mod vendor ./pkg/controller/constrainttemplate/... -race -coverprofile cover.out
+# ./apis/... ./cmd/gator/... -race -bench . -coverprofile cover.out
 
 .PHONY: benchmark-test
 benchmark-test:

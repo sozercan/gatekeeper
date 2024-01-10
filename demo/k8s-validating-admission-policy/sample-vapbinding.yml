@@ -1,0 +1,7 @@
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: "g8rk8srequiredlabelsbinding"
+spec:
+  policyName: "ritak8srequiredlabels"
+  validationActions: [Deny]

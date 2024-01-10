@@ -23,6 +23,8 @@ import (
 
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/k8scel/transform"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/core/constraints"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	statusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/constraint"
@@ -35,9 +37,11 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
 	errorpkg "github.com/pkg/errors"
+	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -62,30 +66,6 @@ var gvkConstraintTemplate = schema.GroupVersionKind{
 	Group:   v1beta1.SchemeGroupVersion.Group,
 	Version: v1beta1.SchemeGroupVersion.Version,
 	Kind:    "ConstraintTemplate",
-}
-
-var VapEnforcement VapFlagType
-
-// VapFlagType is the custom type for the vap-enforcement flag
-type VapFlagType string
-
-// Allowed values for VapFlagType
-var allowedVapFlagVals = []string{VapFlagNone, VapFlagGatekeeperDefault, VapFlagVapDefault}
-
-// String returns the string representation of the flag value
-func (v *VapFlagType) String() string {
-	return string(*v)
-}
-
-// Set validates and sets the value for the VapFlagType
-func (v *VapFlagType) Set(value string) error {
-	for _, val := range allowedVapFlagVals {
-		if val == value {
-			*v = VapFlagType(value)
-			return nil
-		}
-	}
-	return fmt.Errorf("invalid value %s. Allowed values are %s, %s, %s", value, VapFlagNone, VapFlagGatekeeperDefault, VapFlagVapDefault)
 }
 
 type Adder struct {
@@ -299,15 +279,15 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 	}
 	labels := ct.GetLabels()
 	logger.Info("constraint template resource", "labels", labels)
-	useVap, ok := labels[VapGenerationLabel]
+	useVap, ok := labels[constraint.VapGenerationLabel]
 	if !ok {
-		logger.Info("constraint template resource does not have a label for use-vap; will default to flag behavior", "VapEnforcement", VapEnforcement)
-		r.generateVap = getGenerateVap("")
+		logger.Info("constraint template resource does not have a label for use-vap; will default to flag behavior", "VapEnforcement", constraint.VapEnforcement)
+		r.generateVap = constraint.ShouldGenerateVap("")
 	} else {
 		logger.Info("constraint template resource", "useVap", useVap)
-		r.generateVap = getGenerateVap(useVap)
+		r.generateVap = constraint.ShouldGenerateVap(useVap)
 		if useVap != "no" && useVap != "yes" {
-			logger.Error(fmt.Errorf("constraint template resource has an invalid value for %s, allowed values are yes and no", VapGenerationLabel), "constraint template resource has an invalid label value")
+			logger.Error(fmt.Errorf("constraint template resource has an invalid value for %s, allowed values are yes and no", constraint.VapGenerationLabel), "constraint template resource has an invalid label value")
 		}
 	}
 
@@ -355,15 +335,6 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 		logError(request.NamespacedName.Name)
 		return reconcile.Result{}, err
 	}
-	if r.generateVap {
-		// TODO(ritazh): Need to wire r.generateVap up with TemplateToPolicyDefinition in framework, add ownerRef, and handle updates
-
-		// placeholder error
-		err = fmt.Errorf("could not create vap object")
-
-		createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
-		status.Status.Errors = append(status.Status.Errors, createErr)
-	}
 
 	unversionedProposedCRD, err := r.cfClient.CreateCRD(ctx, unversionedCT)
 	if err != nil {
@@ -375,7 +346,7 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 		status.Status.Errors = append(status.Status.Errors, createErr)
 
 		if updateErr := r.Update(ctx, status); updateErr != nil {
-			logger.Error(updateErr, "update error")
+			logger.Error(updateErr, "update status error")
 			return reconcile.Result{Requeue: true}, nil
 		}
 		logError(request.NamespacedName.Name)
@@ -415,7 +386,7 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 
 	result, err := r.handleUpdate(ctx, ct, unversionedCT, proposedCRD, currentCRD, status)
 	if err != nil {
-		logger.Error(err, "update error")
+		logger.Error(err, "handle update error")
 		logError(request.NamespacedName.Name)
 		r.metrics.registry.add(request.NamespacedName, metrics.ErrorStatus)
 	} else if !result.Requeue {
@@ -502,8 +473,93 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 		logger.Error(err, "error adding template to watch registry")
 		return reconcile.Result{}, err
 	}
+	// generating vap resources
+	if r.generateVap && constraint.IsVapAPIEnabled() {
+		// check if vap resource already exists
+		currentVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
+		vapName := fmt.Sprintf("g8r-%s", unversionedCT.GetName())
+		logger.Info("check if vap exists", "vapName", vapName)
+		if err := r.Get(ctx, types.NamespacedName{Name: vapName}, currentVap); err != nil {
+			if !errors.IsNotFound(err) {
+				return reconcile.Result{}, err
+			}
+			currentVap = nil
+		}
+		newVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
+		transformedVap, err := transform.TemplateToPolicyDefinition(unversionedCT)
+		if err != nil {
+			createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
+			status.Status.Errors = append(status.Status.Errors, createErr)
+			err := r.reportErrorOnCTStatus(ctx, ErrCreateCode, "Could not transform to vap object", status, err)
+			return reconcile.Result{}, err
+		}
+		if currentVap == nil {
+			newVap = transformedVap.DeepCopy()
+		} else {
+			newVap = currentVap.DeepCopy()
+			newVap.Spec = transformedVap.Spec
+		}
+
+		if err := controllerutil.SetControllerReference(ct, newVap, r.scheme); err != nil {
+			return reconcile.Result{}, err
+		}
+
+		if currentVap == nil {
+			logger.Info("creating vap")
+			if err := r.Create(ctx, newVap); err != nil {
+				createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
+				status.Status.Errors = append(status.Status.Errors, createErr)
+				err := r.reportErrorOnCTStatus(ctx, ErrCreateCode, "Could not create vap object", status, err)
+				return reconcile.Result{}, err
+			}
+		} else {
+			uc, err := runtime.DefaultUnstructuredConverter.ToUnstructured(currentVap)
+			if err != nil {
+				logger.Error(err, "error converting to unstructured")
+				return reconcile.Result{}, err
+
+			}
+			un, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newVap)
+			if err != nil {
+				logger.Error(err, "error converting to unstructured")
+				return reconcile.Result{}, err
+			}
+
+			if !constraints.SemanticEqual(&unstructured.Unstructured{Object: un}, &unstructured.Unstructured{Object: uc}) { //TODO(ritazh):sementicequal
+				logger.Info("updating vap")
+				if err := r.Update(ctx, newVap); err != nil {
+					updateErr := &v1beta1.CreateCRDError{Code: ErrUpdateCode, Message: err.Error()}
+					status.Status.Errors = append(status.Status.Errors, updateErr)
+					err := r.reportErrorOnCTStatus(ctx, ErrUpdateCode, "Could not update vap object", status, err)
+					return reconcile.Result{}, err
+				}
+			}
+		}
+	}
+	// do not generate vap resources
+	if !r.generateVap && constraint.IsVapAPIEnabled() {
+		// check if vap resource already exists
+		currentVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
+		vapName := fmt.Sprintf("g8r-%s", unversionedCT.GetName())
+		logger.Info("check if vap exists", "vapName", vapName)
+		if err := r.Get(ctx, types.NamespacedName{Name: vapName}, currentVap); err != nil {
+			if !errors.IsNotFound(err) {
+				return reconcile.Result{}, err
+			}
+			currentVap = nil
+		}
+		if currentVap != nil {
+			logger.Info("deleting vap")
+			if err := r.Delete(ctx, currentVap); err != nil {
+				updateErr := &v1beta1.CreateCRDError{Code: ErrUpdateCode, Message: err.Error()}
+				status.Status.Errors = append(status.Status.Errors, updateErr)
+				err := r.reportErrorOnCTStatus(ctx, ErrUpdateCode, "Could not delete vap object", status, err)
+				return reconcile.Result{}, err
+			}
+		}
+	}
 	if err := r.Update(ctx, status); err != nil {
-		logger.Error(err, "update error")
+		logger.Error(err, "update ct pod status error")
 		return reconcile.Result{Requeue: true}, nil
 	}
 	return reconcile.Result{}, nil
@@ -643,14 +699,4 @@ func makeGvk(kind string) schema.GroupVersionKind {
 		Version: "v1beta1",
 		Kind:    kind,
 	}
-}
-
-func getGenerateVap(useVapLabel string) bool {
-	if VapEnforcement == VapFlagGatekeeperDefault {
-		return useVapLabel == "yes"
-	}
-	if VapEnforcement == VapFlagVapDefault {
-		return useVapLabel != "no"
-	}
-	return false
 }

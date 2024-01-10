@@ -18,6 +18,7 @@ package constraint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -40,6 +41,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	rest "k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -51,6 +54,30 @@ import (
 )
 
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "constraint_controller")
+
+var VapEnforcement VapFlagType
+
+// VapFlagType is the custom type for the vap-enforcement flag
+type VapFlagType string
+
+// Allowed values for VapFlagType
+var allowedVapFlagVals = []string{VapFlagNone, VapFlagGatekeeperDefault, VapFlagVapDefault}
+
+// String returns the string representation of the flag value
+func (v *VapFlagType) String() string {
+	return string(*v)
+}
+
+// Set validates and sets the value for the VapFlagType
+func (v *VapFlagType) Set(value string) error {
+	for _, val := range allowedVapFlagVals {
+		if val == value {
+			*v = VapFlagType(value)
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid value %s. Allowed values are %s, %s, %s", value, VapFlagNone, VapFlagGatekeeperDefault, VapFlagVapDefault)
+}
 
 type Adder struct {
 	CFClient         *constraintclient.Client
@@ -196,7 +223,8 @@ type ReconcileConstraint struct {
 	// that would otherwise trigger a watch. The bool returns whether
 	// the function was executed, which can be used to determine
 	// whether the reconciler should infer the object has been deleted
-	ifWatching func(schema.GroupVersionKind, func() error) (bool, error)
+	ifWatching         func(schema.GroupVersionKind, func() error) (bool, error)
+	generateVapBinding bool
 }
 
 // +kubebuilder:rbac:groups=constraints.gatekeeper.sh,resources=*,verbs=get;list;watch;create;update;patch;delete
@@ -251,6 +279,20 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 
 	deleted = deleted || !instance.GetDeletionTimestamp().IsZero()
 
+	labels := instance.GetLabels()
+	log.Info("constraint resource", "labels", labels)
+	useVap, ok := labels[VapGenerationLabel]
+	if !ok {
+		log.Info("constraint resource does not have a label for use-vap; will default to flag behavior", "VapEnforcement", VapEnforcement)
+		r.generateVapBinding = ShouldGenerateVap("")
+	} else {
+		log.Info("constraint resource", "useVap", useVap)
+		r.generateVapBinding = ShouldGenerateVap(useVap)
+		if useVap != "no" && useVap != "yes" {
+			log.Error(fmt.Errorf("constraint resource has an invalid value for %s, allowed values are yes and no", VapGenerationLabel), "constraint resource has an invalid label value")
+		}
+	}
+
 	constraintKey := strings.Join([]string{instance.GetKind(), instance.GetName()}, "/")
 	enforcementAction, err := util.GetEnforcementAction(instance.Object)
 	if err != nil {
@@ -275,6 +317,14 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 		status.Status.ObservedGeneration = instance.GetGeneration()
 		status.Status.Errors = nil
 		if c, err := r.cfClient.GetConstraint(instance); err != nil || !constraints.SemanticEqual(instance, c) {
+			// generate vapbinding resources
+			if r.generateVapBinding && IsVapAPIEnabled() {
+				// TODO(ritazh): wire up with framework, add ownerRef to the constraint, and handle updates
+			}
+			// do not generate vapbinding resources
+			if !r.generateVapBinding && IsVapAPIEnabled() {
+				// TODO(ritazh): delete existing vapbinding
+			}
 			if err := r.cacheConstraint(ctx, instance); err != nil {
 				r.constraintsCache.addConstraintKey(constraintKey, tags{
 					enforcementAction: enforcementAction,
@@ -284,6 +334,7 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 				if err2 := r.writer.Update(ctx, status); err2 != nil {
 					log.Error(err2, "could not report constraint error status")
 				}
+
 				reportMetrics = true
 				return reconcile.Result{}, err
 			}
@@ -455,4 +506,35 @@ func (c *ConstraintsCache) reportTotalConstraints(ctx context.Context, reporter 
 			}
 		}
 	}
+}
+
+func ShouldGenerateVap(useVapLabel string) bool {
+	if VapEnforcement == VapFlagGatekeeperDefault {
+		return useVapLabel == "yes"
+	}
+	if VapEnforcement == VapFlagVapDefault {
+		return useVapLabel != "no"
+	}
+	return false
+}
+
+func IsVapAPIEnabled() bool {
+	// TODO(ritazh): consider caching the result
+	groupVersion := schema.GroupVersion{Group: "admissionregistration.k8s.io", Version: "v1alpha1"}
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		log.Info("IsVapAPIEnabled InClusterConfig", "error", err)
+		return false
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Info("IsVapAPIEnabled NewForConfig", "error", err)
+		return false
+	}
+	if _, err := clientset.Discovery().ServerResourcesForGroupVersion(groupVersion.String()); err != nil {
+		log.Info("IsVapAPIEnabled ServerResourcesForGroupVersion", "error", err)
+		return false
+	}
+	log.Info("IsVapAPIEnabled true")
+	return true
 }

@@ -657,42 +657,42 @@ func TestMatcher_Match(t *testing.T) {
 
 	ns := makeNamespace("my-ns", map[string]string{"ns": "label"})
 	tests := []struct {
-		name                string
-		match               *match.Match
-		cachedNs            *corev1.Namespace
-		req                 interface{}
-		wantHandled         bool
-		wantErr             error
-		want                bool
-		wantCallerAdmission bool
+		name            string
+		match           *match.Match
+		cachedNs        *corev1.Namespace
+		req             interface{}
+		wantHandled     bool
+		wantErr         error
+		want            bool
+		wantIsAdmission bool
 	}{
 		{
-			name:                "nil",
-			req:                 nil,
-			match:               nil,
-			wantHandled:         false,
-			wantErr:             nil,
-			wantCallerAdmission: false,
+			name:            "nil",
+			req:             nil,
+			match:           nil,
+			wantHandled:     false,
+			wantErr:         nil,
+			wantIsAdmission: false,
 		},
 		{
 			name: "AdmissionRequest supported",
 			req: admissionv1.AdmissionRequest{
 				Object: runtime.RawExtension{Raw: matchedRawData()},
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                false,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            false,
+			wantIsAdmission: false,
 		},
 		{
-			name:                "unstructured.Unstructured supported",
-			req:                 makeResource(schema.GroupVersionKind{Group: "some", Kind: "Thing"}, "foo"),
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                false,
-			wantCallerAdmission: false,
+			name:            "unstructured.Unstructured supported",
+			req:             makeResource(schema.GroupVersionKind{Group: "some", Kind: "Thing"}, "foo"),
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            false,
+			wantIsAdmission: false,
 		},
 		{
 			name: "Raw object doesn't unmarshal",
@@ -703,11 +703,11 @@ func TestMatcher_Match(t *testing.T) {
 				}},
 				Source: types.SourceTypeDefault,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             ErrRequestObject,
-			want:                false,
-			wantCallerAdmission: false,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         ErrRequestObject,
+			want:            false,
+			wantIsAdmission: false,
 		},
 		{
 			name: "Match error",
@@ -715,12 +715,13 @@ func TestMatcher_Match(t *testing.T) {
 				AdmissionRequest: &admissionv1.AdmissionRequest{
 					Object: runtime.RawExtension{Raw: namespacedRawData("foo")},
 				},
+				IsAdmission: true,
 			},
-			match:               namespaceSelectorMatch(),
-			wantHandled:         true,
-			wantErr:             ErrMatching,
-			want:                false,
-			wantCallerAdmission: true,
+			match:           namespaceSelectorMatch(),
+			wantHandled:     true,
+			wantErr:         ErrMatching,
+			want:            false,
+			wantIsAdmission: true,
 		},
 		{
 			name: "Success if Namespace not cached",
@@ -728,12 +729,13 @@ func TestMatcher_Match(t *testing.T) {
 				AdmissionRequest: &admissionv1.AdmissionRequest{
 					Object: runtime.RawExtension{Raw: nsData},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                false,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            false,
+			wantIsAdmission: true,
 		},
 		{
 			name: "AugmentedReview is supported",
@@ -742,12 +744,13 @@ func TestMatcher_Match(t *testing.T) {
 				AdmissionRequest: &admissionv1.AdmissionRequest{
 					Object: runtime.RawExtension{Raw: matchedRawData()},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                true,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            true,
+			wantIsAdmission: true,
 		},
 		{
 			name: "AugmentedUnstructured is supported",
@@ -755,11 +758,11 @@ func TestMatcher_Match(t *testing.T) {
 				Namespace: ns,
 				Object:    *makeResource(schema.GroupVersionKind{Group: "some", Kind: "Thing"}, "foo", map[string]string{"obj": "label"}),
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                true,
-			wantCallerAdmission: false,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            true,
+			wantIsAdmission: false,
 		},
 		{
 			name: "Both object and old object are matched",
@@ -769,12 +772,13 @@ func TestMatcher_Match(t *testing.T) {
 					Object:    runtime.RawExtension{Raw: matchedRawData()},
 					OldObject: runtime.RawExtension{Raw: matchedRawData()},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                true,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            true,
+			wantIsAdmission: true,
 		},
 		{
 			name: "object is matched, old object is not matched",
@@ -784,12 +788,13 @@ func TestMatcher_Match(t *testing.T) {
 					Object:    runtime.RawExtension{Raw: matchedRawData()},
 					OldObject: runtime.RawExtension{Raw: unmatchedRawData()},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                true,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            true,
+			wantIsAdmission: true,
 		},
 		{
 			name: "object is not matched, old object is matched",
@@ -799,12 +804,13 @@ func TestMatcher_Match(t *testing.T) {
 					Object:    runtime.RawExtension{Raw: unmatchedRawData()},
 					OldObject: runtime.RawExtension{Raw: matchedRawData()},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                true,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            true,
+			wantIsAdmission: true,
 		},
 		{
 			name: "object is matched, old object is not matched",
@@ -814,12 +820,13 @@ func TestMatcher_Match(t *testing.T) {
 					Object:    runtime.RawExtension{Raw: unmatchedRawData()},
 					OldObject: runtime.RawExtension{Raw: unmatchedRawData()},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                false,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            false,
+			wantIsAdmission: true,
 		},
 		{
 			name: "new object is not matched, old object is not specified",
@@ -828,12 +835,13 @@ func TestMatcher_Match(t *testing.T) {
 				AdmissionRequest: &admissionv1.AdmissionRequest{
 					Object: runtime.RawExtension{Raw: unmatchedRawData()},
 				},
+				IsAdmission: true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                false,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            false,
+			wantIsAdmission: true,
 		},
 		{
 			name:     "missing cached Namespace",
@@ -844,16 +852,17 @@ func TestMatcher_Match(t *testing.T) {
 					Namespace: "foo",
 					Object:    runtime.RawExtension{Raw: namespacedRawData("foo")},
 				},
+				IsAdmission: true,
 			},
 			match: &match.Match{
 				NamespaceSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"ns": "label"},
 				},
 			},
-			wantHandled:         true,
-			wantErr:             ErrMatching,
-			want:                false,
-			wantCallerAdmission: true,
+			wantHandled:     true,
+			wantErr:         ErrMatching,
+			want:            false,
+			wantIsAdmission: true,
 		},
 		{
 			name: "use cached Namespace no match",
@@ -868,16 +877,17 @@ func TestMatcher_Match(t *testing.T) {
 					Namespace: "foo",
 					Object:    runtime.RawExtension{Raw: namespacedRawData("foo")},
 				},
+				IsAdmission: true,
 			},
 			match: &match.Match{
 				NamespaceSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"ns": "label"},
 				},
 			},
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                false,
-			wantCallerAdmission: true,
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            false,
+			wantIsAdmission: true,
 		},
 		{
 			name: "use cached Namespace match",
@@ -895,28 +905,30 @@ func TestMatcher_Match(t *testing.T) {
 					Namespace: "foo",
 					Object:    runtime.RawExtension{Raw: namespacedRawData("foo")},
 				},
+				IsAdmission: true,
 			},
 			match: &match.Match{
 				NamespaceSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"ns": "label"},
 				},
 			},
-			wantHandled:         true,
-			wantErr:             nil,
-			want:                true,
-			wantCallerAdmission: true,
+			wantHandled:     true,
+			wantErr:         nil,
+			want:            true,
+			wantIsAdmission: true,
 		},
 		{
 			name: "neither new or old object is specified",
 			req: &AugmentedReview{
 				Namespace:        ns,
 				AdmissionRequest: &admissionv1.AdmissionRequest{},
+				IsAdmission:      true,
 			},
-			match:               fooMatch(),
-			wantHandled:         true,
-			wantErr:             ErrRequestObject,
-			want:                false,
-			wantCallerAdmission: true,
+			match:           fooMatch(),
+			wantHandled:     true,
+			wantErr:         ErrRequestObject,
+			want:            false,
+			wantIsAdmission: true,
 		},
 	}
 	for _, tt := range tests {
@@ -932,14 +944,19 @@ func TestMatcher_Match(t *testing.T) {
 				m.cache.AddNamespace(toKey(key), tt.cachedNs)
 			}
 
-			isCallerAdmission := target.IsCallerAdmission(tt.req)
-			if isCallerAdmission != tt.wantCallerAdmission {
-				t.Fatalf("test %v: isCallerAdmission = %v, wantCallerAdmission %v", tt.name, isCallerAdmission, tt.wantCallerAdmission)
-			}
-
 			handled, review, err := target.HandleReview(tt.req)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if review != nil {
+				gkr, ok := review.(*gkReview)
+				if !ok {
+					t.Fatalf("test %v: HandleReview failed to return gkReview object", tt.name)
+				}
+
+				if gkr != nil && tt.wantIsAdmission != gkr.IsAdmissionRequest() {
+					t.Fatalf("test %v: isAdmission = %v, wantIsAdmission %v", tt.name, gkr.IsAdmissionRequest(), tt.wantIsAdmission)
+				}
 			}
 
 			if tt.wantHandled != handled {
