@@ -4,4 +4,7 @@ metadata:
   name: "g8rk8srequiredlabelsbinding"
 spec:
   policyName: "ritak8srequiredlabels"
+  paramRef:
+    name: all-must-have-owner
+    parameterNotFoundAction: Deny
   validationActions: [Deny]

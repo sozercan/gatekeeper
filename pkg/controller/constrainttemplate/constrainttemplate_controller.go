@@ -525,7 +525,7 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 				return reconcile.Result{}, err
 			}
 
-			if !constraints.SemanticEqual(&unstructured.Unstructured{Object: un}, &unstructured.Unstructured{Object: uc}) { //TODO(ritazh):sementicequal
+			if !constraints.SemanticEqual(&unstructured.Unstructured{Object: un}, &unstructured.Unstructured{Object: uc}) {
 				logger.Info("updating vap")
 				if err := r.Update(ctx, newVap); err != nil {
 					updateErr := &v1beta1.CreateCRDError{Code: ErrUpdateCode, Message: err.Error()}
