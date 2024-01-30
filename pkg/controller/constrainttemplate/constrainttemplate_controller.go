@@ -283,12 +283,16 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 	labels := ct.GetLabels()
 	logger.Info("constraint template resource", "labels", labels)
 	useVap, ok := labels[constraint.VapGenerationLabel]
+	logger.Info("*** useVap", "useVap", useVap)
 	if !ok {
 		logger.Info("constraint template resource does not have a label for use-vap; will default to flag behavior", "VapEnforcement", constraint.VapEnforcement)
 		r.generateVap = constraint.ShouldGenerateVap("")
+		logger.Info("***1", "r.generateVap", r.generateVap)
 	} else {
-		logger.Info("constraint template resource", "useVap", useVap)
-		r.generateVap = constraint.ShouldGenerateVap(useVap)
+		logger.Info("*** constraint template resource", "useVap", useVap)
+		// r.generateVap = constraint.ShouldGenerateVap(useVap)
+		r.generateVap = true
+		logger.Info("***2", "r.generateVap", r.generateVap, "useVap", useVap)
 		if useVap != "no" && useVap != "yes" {
 			logger.Error(fmt.Errorf("constraint template resource has an invalid value for %s, allowed values are yes and no", constraint.VapGenerationLabel), "constraint template resource has an invalid label value")
 		}
@@ -476,12 +480,13 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 		logger.Error(err, "error adding template to watch registry")
 		return reconcile.Result{}, err
 	}
+
 	// generating vap resources
-	if r.generateVap && constraint.IsVapAPIEnabled() {
+	if r.generateVap {
 		// check if vap resource already exists
 		currentVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
 		vapName := fmt.Sprintf("gatekeeper-%s", unversionedCT.GetName())
-		logger.Info("check if vap exists", "vapName", vapName)
+		logger.Info("check if vap exists1", "vapName", vapName)
 		if err := r.Get(ctx, types.NamespacedName{Name: vapName}, currentVap); err != nil {
 			logger.Info("get vap error", "vapName", vapName, "error", err)
 
@@ -562,11 +567,11 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 		}
 	}
 	// do not generate vap resources
-	if !r.generateVap && constraint.IsVapAPIEnabled() {
+	if !r.generateVap {
 		// check if vap resource already exists
 		currentVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
 		vapName := fmt.Sprintf("gatekeeper-%s", unversionedCT.GetName())
-		logger.Info("check if vap exists", "vapName", vapName)
+		logger.Info("check if vap exists2", "vapName", vapName)
 		if err := r.Get(ctx, types.NamespacedName{Name: vapName}, currentVap); err != nil {
 			if !errors.IsNotFound(err) {
 				return reconcile.Result{}, err

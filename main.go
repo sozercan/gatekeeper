@@ -132,7 +132,9 @@ func init() {
 
 	// +kubebuilder:scaffold:scheme
 	flag.Var(disabledBuiltins, "disable-opa-builtin", "disable opa built-in function, this flag can be declared more than once.")
-	flag.Var(&constraint.VapEnforcement, "vap-enforcement", "control VAP resource generation. Allowed values are NONE:do not generate, GATEKEEPER_DEFAULT:do not generate unless label gatekeeper.sh/use-vap: yes is added to policy explictly, VAP_DEFAULT: generate unless label gatekeeper.sh/use-vap: no is added to policy explictly.")
+	// flag.Var(&constraint.VapEnforcement, "vap-enforcement", "control VAP resource generation. Allowed values are NONE:do not generate, GATEKEEPER_DEFAULT:do not generate unless label gatekeeper.sh/use-vap: yes is added to policy explictly, VAP_DEFAULT: generate unless label gatekeeper.sh/use-vap: no is added to policy explictly.")
+	vapStr := constraint.VapEnforcement.String()
+	flag.StringVar(&vapStr, "vap-enforcement", "VAP_DEFAULT", "control VAP resource generation. Allowed values are NONE:do not generate, GATEKEEPER_DEFAULT:do not generate unless label gatekeeper.sh/use-vap: yes is added to policy explictly, VAP_DEFAULT: generate unless label gatekeeper.sh/use-vap: no is added to policy explictly.")
 }
 
 func main() {

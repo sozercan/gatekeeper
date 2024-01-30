@@ -333,7 +333,7 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 
 		if c, err := r.cfClient.GetConstraint(instance); err != nil || !constraints.SemanticEqual(instance, c) || r.generateVapBinding != cachedGenerateVapBinding {
 			// generate vapbinding resources
-			if r.generateVapBinding && IsVapAPIEnabled() {
+			if r.generateVapBinding {
 				// check if vapbinding resource already exists
 				currentVapBinding := &admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding{}
 				vapBindingName := fmt.Sprintf("gatekeeper-%s", instance.GetName())
