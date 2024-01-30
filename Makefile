@@ -93,10 +93,11 @@ MANAGER_IMAGE_PATCH := "apiVersion: apps/v1\
 \n        - --operation=status\
 \n        - --operation=mutation-status\
 \n        - --audit-chunk-size=500\
-\n        - --logtostderr"\
+\n        - --logtostderr\
 \n        - --vap-enforcement=GATEKEEPER_DEFAULT\
 \n        - --validate-template-rego=false\
-\n        - --experimental-enable-k8s-native-validation
+\n        - --experimental-enable-k8s-native-validation\
+\n"
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))

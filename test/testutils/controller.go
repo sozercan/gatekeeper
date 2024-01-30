@@ -16,6 +16,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/apis"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -127,14 +128,28 @@ func StartControlPlane(m *testing.M, cfg **rest.Config, testerDepth int) {
 	for i := 0; i < testerDepth; i++ {
 		walkbacks[i] = ".."
 	}
+	apiserverFlags := []string{
+		"--runtime-config=api/all=true",
+		"--feature-gates=ValidatingAdmissionPolicy=true",
+	}
 	t := &envtest.Environment{
 		CRDDirectoryPaths: []string{
 			filepath.Join(append(walkbacks, vendorCRDPath...)...),
 			filepath.Join(append(walkbacks, gkCRDPath...)...),
 		},
 		ErrorIfCRDPathMissing: true,
+		KubeAPIServerFlags:    apiserverFlags,
 	}
+	// apiServerArgs := t.ControlPlane.GetAPIServer().Configure()
+	// apiServerArgs.Append("runtime-config", "api/all=true")
+	// apiServerArgs.Append("runtime-config", "admissionregistration.k8s.io/v1alpha1=true")
+	// apiServerArgs.Append("--feature-gates", "ValidatingAdmissionPolicy=true")
+
 	if err := apis.AddToScheme(scheme.Scheme); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := admissionregistrationv1alpha1.AddToScheme(scheme.Scheme); err != nil {
 		log.Fatal(err)
 	}
 
@@ -161,7 +176,6 @@ func CreateThenCleanup(ctx context.Context, t *testing.T, c client.Client, obj c
 	if !ok {
 		t.Fatalf("got obj.DeepCopyObject() type = %T, want %T", cpy, client.Object(nil))
 	}
-
 	err := c.Create(ctx, cpyObj)
 	if err != nil {
 		t.Fatal(err)

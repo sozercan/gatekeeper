@@ -116,7 +116,7 @@ func (a *Adder) InjectGetPod(getPod func(context.Context) (*corev1.Pod, error)) 
 // regEvents is the channel registered by Registrar to put the events in
 // cstrEvents and regEvents point to same event channel except for testing.
 func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *watch.Manager, cs *watch.ControllerSwitch, tracker *readiness.Tracker, cstrEvents <-chan event.GenericEvent, regEvents chan<- event.GenericEvent, getPod func(context.Context) (*corev1.Pod, error)) (*ReconcileConstraintTemplate, error) {
-	// constraintsCache contains total number of constraints and shared mutex
+	// constraintsCache contains total number of constraints and shared mutex and vap label
 	constraintsCache := constraint.NewConstraintsCache()
 
 	w, err := wm.NewRegistrar(ctrlName, regEvents)
@@ -129,6 +129,7 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 	}
 
 	// via the registrar below.
+	constraintEvents := make(chan event.GenericEvent, 1024)
 	constraintAdder := constraint.Adder{
 		CFClient:         cfClient,
 		ConstraintsCache: constraintsCache,
@@ -180,6 +181,7 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 		metrics:       r,
 		tracker:       tracker,
 		getPod:        getPod,
+		cstrEvents:    constraintEvents,
 	}
 
 	if getPod == nil {
@@ -242,6 +244,7 @@ type ReconcileConstraintTemplate struct {
 	tracker       *readiness.Tracker
 	getPod        func(context.Context) (*corev1.Pod, error)
 	generateVap   bool
+	cstrEvents    chan event.GenericEvent
 }
 
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update;patch;delete
@@ -477,17 +480,21 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 	if r.generateVap && constraint.IsVapAPIEnabled() {
 		// check if vap resource already exists
 		currentVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
-		vapName := fmt.Sprintf("g8r-%s", unversionedCT.GetName())
+		vapName := fmt.Sprintf("gatekeeper-%s", unversionedCT.GetName())
 		logger.Info("check if vap exists", "vapName", vapName)
 		if err := r.Get(ctx, types.NamespacedName{Name: vapName}, currentVap); err != nil {
+			logger.Info("get vap error", "vapName", vapName, "error", err)
+
 			if !errors.IsNotFound(err) {
 				return reconcile.Result{}, err
 			}
 			currentVap = nil
 		}
+		logger.Info("get vap", "vapName", vapName, "currentVap", currentVap)
 		newVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
 		transformedVap, err := transform.TemplateToPolicyDefinition(unversionedCT)
 		if err != nil {
+			logger.Info("transform to vap error", "vapName", vapName, "error", err)
 			createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
 			status.Status.Errors = append(status.Status.Errors, createErr)
 			err := r.reportErrorOnCTStatus(ctx, ErrCreateCode, "Could not transform to vap object", status, err)
@@ -505,8 +512,9 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 		}
 
 		if currentVap == nil {
-			logger.Info("creating vap")
+			logger.Info("creating vap", "vapName", vapName)
 			if err := r.Create(ctx, newVap); err != nil {
+				logger.Info("creating vap error", "vapName", vapName, "error", err)
 				createErr := &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()}
 				status.Status.Errors = append(status.Status.Errors, createErr)
 				err := r.reportErrorOnCTStatus(ctx, ErrCreateCode, "Could not create vap object", status, err)
@@ -533,6 +541,23 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 					err := r.reportErrorOnCTStatus(ctx, ErrUpdateCode, "Could not update vap object", status, err)
 					return reconcile.Result{}, err
 				}
+
+				// after vap is updated, get all constraints and add event
+				gvk := makeGvk(ct.Spec.CRD.Spec.Names.Kind)
+				logger.Info("list gvk objects", "gvk", gvk)
+				cstrObjs, err := r.listObjects(ctx, gvk)
+				if err != nil {
+					logger.Error(err, "get all constraints listObjects")
+					updateErr := &v1beta1.CreateCRDError{Code: ErrUpdateCode, Message: err.Error()}
+					status.Status.Errors = append(status.Status.Errors, updateErr)
+					err := r.reportErrorOnCTStatus(ctx, ErrUpdateCode, "Could not list all constraint objects", status, err)
+					return reconcile.Result{}, err
+				}
+				logger.Info("list gvk objects", "cstrObjs", cstrObjs)
+				for _, cstr := range cstrObjs {
+					logger.Info("triggering cstrEvent")
+					r.cstrEvents <- event.GenericEvent{Object: &cstr}
+				}
 			}
 		}
 	}
@@ -540,7 +565,7 @@ func (r *ReconcileConstraintTemplate) handleUpdate(
 	if !r.generateVap && constraint.IsVapAPIEnabled() {
 		// check if vap resource already exists
 		currentVap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
-		vapName := fmt.Sprintf("g8r-%s", unversionedCT.GetName())
+		vapName := fmt.Sprintf("gatekeeper-%s", unversionedCT.GetName())
 		logger.Info("check if vap exists", "vapName", vapName)
 		if err := r.Get(ctx, types.NamespacedName{Name: vapName}, currentVap); err != nil {
 			if !errors.IsNotFound(err) {
@@ -663,6 +688,20 @@ func (r *ReconcileConstraintTemplate) removeWatch(ctx context.Context, kind sche
 		return err
 	}
 	return r.statusWatcher.RemoveWatch(ctx, kind)
+}
+
+func (r *ReconcileConstraintTemplate) listObjects(ctx context.Context, gvk schema.GroupVersionKind) ([]unstructured.Unstructured, error) {
+	list := &unstructured.UnstructuredList{
+		Object: map[string]interface{}{},
+		Items:  []unstructured.Unstructured{},
+	}
+	gvk.Kind += "List"
+	list.SetGroupVersionKind(gvk)
+	err := r.List(ctx, list)
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }
 
 type action string

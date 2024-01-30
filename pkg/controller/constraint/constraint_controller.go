@@ -23,7 +23,9 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
+	v1beta1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/k8scel/transform"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/constraints"
 	constraintstatusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
@@ -34,6 +36,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
+	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -45,6 +48,7 @@ import (
 	rest "k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -139,8 +143,9 @@ type ConstraintsCache struct {
 }
 
 type tags struct {
-	enforcementAction util.EnforcementAction
-	status            metrics.Status
+	enforcementAction  util.EnforcementAction
+	status             metrics.Status
+	generateVapBinding bool
 }
 
 // newReconciler returns a new reconcile.Reconciler.
@@ -282,17 +287,23 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 	labels := instance.GetLabels()
 	log.Info("constraint resource", "labels", labels)
 	useVap, ok := labels[VapGenerationLabel]
-	if !ok {
-		log.Info("constraint resource does not have a label for use-vap; will default to flag behavior", "VapEnforcement", VapEnforcement)
-		r.generateVapBinding = ShouldGenerateVap("")
-	} else {
+	if ok {
 		log.Info("constraint resource", "useVap", useVap)
-		r.generateVapBinding = ShouldGenerateVap(useVap)
-		if useVap != "no" && useVap != "yes" {
-			log.Error(fmt.Errorf("constraint resource has an invalid value for %s, allowed values are yes and no", VapGenerationLabel), "constraint resource has an invalid label value")
-		}
 	}
-
+	// unless constraint vap label is false, default to parent
+	if useVap == "no" {
+		r.generateVapBinding = false
+	} else {
+		log.Info("constraint resource use-vap label is not no; will default to parent constraint template label")
+		parentCTUseVap, err := r.getCTVapLabel(ctx, instance.GetKind())
+		if err != nil {
+			log.Error(err, "could not get parent constraint template object")
+			return reconcile.Result{}, err
+		}
+		log.Info("constraint resource", "parentCTUseVap", parentCTUseVap)
+		r.generateVapBinding = ShouldGenerateVap(parentCTUseVap)
+		log.Info("constraint resource", "generateVapBinding", r.generateVapBinding)
+	}
 	constraintKey := strings.Join([]string{instance.GetKind(), instance.GetName()}, "/")
 	enforcementAction, err := util.GetEnforcementAction(instance.Object)
 	if err != nil {
@@ -316,19 +327,105 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 		status.Status.ConstraintUID = instance.GetUID()
 		status.Status.ObservedGeneration = instance.GetGeneration()
 		status.Status.Errors = nil
-		if c, err := r.cfClient.GetConstraint(instance); err != nil || !constraints.SemanticEqual(instance, c) {
+		cachedTags := r.constraintsCache.getTagsByConstraintKey(constraintKey)
+		cachedGenerateVapBinding := cachedTags.generateVapBinding
+		log.Info("constraint", "cachedGenerateVapBinding", cachedGenerateVapBinding)
+
+		if c, err := r.cfClient.GetConstraint(instance); err != nil || !constraints.SemanticEqual(instance, c) || r.generateVapBinding != cachedGenerateVapBinding {
 			// generate vapbinding resources
 			if r.generateVapBinding && IsVapAPIEnabled() {
-				// TODO(ritazh): wire up with framework, add ownerRef to the constraint, and handle updates
+				// check if vapbinding resource already exists
+				currentVapBinding := &admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding{}
+				vapBindingName := fmt.Sprintf("gatekeeper-%s", instance.GetName())
+				log.Info("check if vapbinding exists", "vapBindingName", vapBindingName)
+				if err := r.reader.Get(ctx, types.NamespacedName{Name: vapBindingName}, currentVapBinding); err != nil {
+					if !apierrors.IsNotFound(err) {
+						return reconcile.Result{}, err
+					}
+					currentVapBinding = nil
+				}
+				newVapBinding := &admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding{}
+				transformedVapBinding, err := transform.ConstraintToBinding(instance)
+				if err != nil {
+					status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: err.Error()})
+					if err2 := r.writer.Update(ctx, status); err2 != nil {
+						log.Error(err2, "could not report transform vapbinding error status")
+					}
+					return reconcile.Result{}, err
+				}
+				if currentVapBinding == nil {
+					newVapBinding = transformedVapBinding.DeepCopy()
+				} else {
+					newVapBinding = currentVapBinding.DeepCopy()
+					newVapBinding.Spec = transformedVapBinding.Spec
+				}
+
+				if err := controllerutil.SetControllerReference(instance, newVapBinding, r.scheme); err != nil {
+					return reconcile.Result{}, err
+				}
+
+				if currentVapBinding == nil {
+					log.Info("creating vapbinding")
+					if err := r.writer.Create(ctx, newVapBinding); err != nil {
+						status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: err.Error()})
+						if err2 := r.writer.Update(ctx, status); err2 != nil {
+							log.Error(err2, "could not report creating vapbinding error status")
+						}
+						return reconcile.Result{}, err
+					}
+				} else {
+					uc, err := runtime.DefaultUnstructuredConverter.ToUnstructured(currentVapBinding)
+					if err != nil {
+						log.Error(err, "error converting to unstructured")
+						return reconcile.Result{}, err
+
+					}
+					un, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newVapBinding)
+					if err != nil {
+						log.Error(err, "error converting to unstructured")
+						return reconcile.Result{}, err
+					}
+
+					if !constraints.SemanticEqual(&unstructured.Unstructured{Object: un}, &unstructured.Unstructured{Object: uc}) {
+						log.Info("updating vapbinding")
+						if err := r.writer.Update(ctx, newVapBinding); err != nil {
+							status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: err.Error()})
+							if err2 := r.writer.Update(ctx, status); err2 != nil {
+								log.Error(err2, "could not report update vapbinding error status")
+							}
+							return reconcile.Result{}, err
+						}
+					}
+				}
 			}
 			// do not generate vapbinding resources
 			if !r.generateVapBinding && IsVapAPIEnabled() {
-				// TODO(ritazh): delete existing vapbinding
+				// check if vapbinding resource already exists
+				currentVapBinding := &admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding{}
+				vapBindingName := fmt.Sprintf("gatekeeper-%s", instance.GetName())
+				log.Info("check if vapbinding exists", "vapBindingName", vapBindingName)
+				if err := r.reader.Get(ctx, types.NamespacedName{Name: vapBindingName}, currentVapBinding); err != nil {
+					if !apierrors.IsNotFound(err) {
+						return reconcile.Result{}, err
+					}
+					currentVapBinding = nil
+				}
+				if currentVapBinding != nil {
+					log.Info("deleting vapbinding")
+					if err := r.writer.Delete(ctx, currentVapBinding); err != nil {
+						status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: err.Error()})
+						if err2 := r.writer.Update(ctx, status); err2 != nil {
+							log.Error(err2, "could not report delete vapbinding error status")
+						}
+						return reconcile.Result{}, err
+					}
+				}
 			}
 			if err := r.cacheConstraint(ctx, instance); err != nil {
 				r.constraintsCache.addConstraintKey(constraintKey, tags{
-					enforcementAction: enforcementAction,
-					status:            metrics.ErrorStatus,
+					enforcementAction:  enforcementAction,
+					status:             metrics.ErrorStatus,
+					generateVapBinding: r.generateVapBinding,
 				})
 				status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: err.Error()})
 				if err2 := r.writer.Update(ctx, status); err2 != nil {
@@ -348,8 +445,9 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 
 		// adding constraint to cache and sending metrics
 		r.constraintsCache.addConstraintKey(constraintKey, tags{
-			enforcementAction: enforcementAction,
-			status:            metrics.ActiveStatus,
+			enforcementAction:  enforcementAction,
+			status:             metrics.ActiveStatus,
+			generateVapBinding: r.generateVapBinding,
 		})
 		reportMetrics = true
 	} else {
@@ -462,6 +560,22 @@ func (r *ReconcileConstraint) cacheConstraint(ctx context.Context, instance *uns
 	return nil
 }
 
+func (r *ReconcileConstraint) getCTVapLabel(ctx context.Context, gvk string) (string, error) {
+	ct := &v1beta1.ConstraintTemplate{}
+	ctName := strings.ToLower(gvk)
+	log.Info("get parent constraint template and its labels", "ctName", ctName)
+	if err := r.reader.Get(ctx, types.NamespacedName{Name: ctName}, ct); err != nil {
+		return "", err
+	}
+	labels := ct.GetLabels()
+	log.Info("parent constraint template", "labels", labels)
+	useVap, ok := labels[VapGenerationLabel]
+	if !ok {
+		return "", nil
+	}
+	return useVap, nil
+}
+
 func NewConstraintsCache() *ConstraintsCache {
 	return &ConstraintsCache{
 		cache: make(map[string]tags),
@@ -473,8 +587,9 @@ func (c *ConstraintsCache) addConstraintKey(constraintKey string, t tags) {
 	defer c.mux.Unlock()
 
 	c.cache[constraintKey] = tags{
-		enforcementAction: t.enforcementAction,
-		status:            t.status,
+		enforcementAction:  t.enforcementAction,
+		status:             t.status,
+		generateVapBinding: t.generateVapBinding,
 	}
 }
 
@@ -483,6 +598,13 @@ func (c *ConstraintsCache) deleteConstraintKey(constraintKey string) {
 	defer c.mux.Unlock()
 
 	delete(c.cache, constraintKey)
+}
+
+func (c *ConstraintsCache) getTagsByConstraintKey(constraintKey string) tags {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+
+	return c.cache[constraintKey]
 }
 
 func (c *ConstraintsCache) reportTotalConstraints(ctx context.Context, reporter StatsReporter) {
@@ -524,7 +646,7 @@ func IsVapAPIEnabled() bool {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		log.Info("IsVapAPIEnabled InClusterConfig", "error", err)
-		return false
+		return true
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {

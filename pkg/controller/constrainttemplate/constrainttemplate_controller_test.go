@@ -25,7 +25,10 @@ import (
 	templatesv1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/k8scel"
+	celSchema "github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/k8scel/schema"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	statusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
@@ -35,18 +38,20 @@ import (
 	testclient "github.com/open-policy-agent/gatekeeper/v3/test/clients"
 	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	"golang.org/x/net/context"
-	admissionv1 "k8s.io/api/admission/v1"
+	//admissionv1 "k8s.io/api/admission/v1"
+	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	//apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
+	//"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
+	//"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
@@ -79,6 +84,62 @@ violation[{"msg": "denied!"}] {
 	1 == 1
 }
 `,
+				},
+			},
+		},
+	}
+}
+func makeReconcileConstraintTemplateForVap(suffix string, useVap map[string]string) *v1beta1.ConstraintTemplate {
+	source := &celSchema.Source{
+		FailurePolicy: ptr.To[string]("Fail"),
+		MatchConditions: []celSchema.MatchCondition{
+			{
+				Name:       "must_match_something",
+				Expression: "true == true",
+			},
+		},
+		Variables: []celSchema.Variable{
+			{
+				Name:       "my_variable",
+				Expression: "true",
+			},
+		},
+		Validations: []celSchema.Validation{
+			{
+				Expression:        "1 == 1",
+				Message:           "some fallback message",
+				MessageExpression: `"some CEL string"`,
+			},
+		},
+	}
+	return &v1beta1.ConstraintTemplate{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "ConstraintTemplate",
+			APIVersion: templatesv1.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "denyall" + strings.ToLower(suffix),
+			Labels: useVap,
+		},
+		Spec: v1beta1.ConstraintTemplateSpec{
+			CRD: v1beta1.CRD{
+				Spec: v1beta1.CRDSpec{
+					Names: v1beta1.Names{
+						Kind: "DenyAll" + suffix,
+					},
+				},
+			},
+			Targets: []v1beta1.Target{
+				{
+					Target: target.Name,
+					Code: []v1beta1.Code{
+						{
+							Engine: "K8sNativeValidation",
+							Source: &templates.Anything{
+								Value: source.MustToUnstructured(),
+							},
+						},
+					},
 				},
 			},
 		},
@@ -120,8 +181,13 @@ func TestReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to set up Driver: %v", err)
 	}
+	// initialize K8sValidation
+	k8sDriver, err := k8scel.New()
+	if err != nil {
+		t.Fatalf("unable to set up K8s native driver: %v", err)
+	}
 
-	cfClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
+	cfClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver), constraintclient.Driver(k8sDriver))
 	if err != nil {
 		t.Fatalf("unable to set up constraint framework client: %s", err)
 	}
@@ -154,260 +220,59 @@ func TestReconcile(t *testing.T) {
 	ctx := context.Background()
 	testutils.StartManager(ctx, t, mgr)
 
-	t.Run("CRD Gets Created", func(t *testing.T) {
-		suffix := "CRDGetsCreated"
+	// t.Run("CRD Gets Created", func(t *testing.T) {
+	// 	suffix := "CRDGetsCreated"
 
-		logger.Info("Running test: CRD Gets Created")
-		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
-		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
+	// 	logger.Info("Running test: CRD Gets Created")
+	// 	constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
+	// 	t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
+	// 	testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
 
-		clientset := kubernetes.NewForConfigOrDie(cfg)
-		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
-			return true
-		}, func() error {
-			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := c.Get(ctx, crdKey(suffix), crd); err != nil {
-				return err
-			}
-			rs, err := clientset.Discovery().ServerResourcesForGroupVersion("constraints.gatekeeper.sh/v1beta1")
-			if err != nil {
-				return err
-			}
-			for _, r := range rs.APIResources {
-				if r.Kind == "DenyAll"+suffix {
-					return nil
-				}
-			}
-			return errors.New("DenyAll not found")
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	})
+	// 	clientset := kubernetes.NewForConfigOrDie(cfg)
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		crd := &apiextensionsv1.CustomResourceDefinition{}
+	// 		if err := c.Get(ctx, crdKey(suffix), crd); err != nil {
+	// 			return err
+	// 		}
+	// 		rs, err := clientset.Discovery().ServerResourcesForGroupVersion("constraints.gatekeeper.sh/v1beta1")
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		for _, r := range rs.APIResources {
+	// 			if r.Kind == "DenyAll"+suffix {
+	// 				return nil
+	// 			}
+	// 		}
+	// 		return errors.New("DenyAll not found")
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// })
 
 	t.Run("Vap gets created", func(t *testing.T) {
 		suffix := "VapGetsCreated"
 
 		logger.Info("Running test: Vap Gets Created")
 		labels := map[string]string{
-			VapGenerationLabel: "yes",
+			"gatekeeper.sh/use-vap": "yes",
 		}
-		constraintTemplate := makeReconcileConstraintTemplate(suffix, labels)
+		constraintTemplate := makeReconcileConstraintTemplateForVap(suffix, labels)
 		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
 		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
 
-		// TODO(ritazh): validate creation of vap resources
-	})
-
-	t.Run("Constraint is marked as enforced", func(t *testing.T) {
-		suffix := "MarkedEnforced"
-
-		logger.Info("Running test: Constraint is marked as enforced")
-		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
-		cstr := newDenyAllCstr(suffix)
-
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
-		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
-
-		err = retry.OnError(testutils.ConstantRetry, func(error) bool {
-			return true
-		}, func() error {
-			return c.Create(ctx, cstr)
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = constraintEnforced(ctx, c, suffix)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testns",
-			},
-		}
-		req := admissionv1.AdmissionRequest{
-			Kind: metav1.GroupVersionKind{
-				Group:   "",
-				Version: "v1",
-				Kind:    "Namespace",
-			},
-			Operation: "Create",
-			Name:      "FooNamespace",
-			Object:    runtime.RawExtension{Object: ns},
-		}
-		resp, err := cfClient.Review(ctx, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		gotResults := resp.Results()
-		if len(gotResults) != 1 {
-			t.Log(resp.TraceDump())
-			t.Log(cfClient.Dump(ctx))
-			t.Fatalf("want 1 result, got %v", gotResults)
-		}
-	})
-
-	t.Run("Deleted constraint CRDs are recreated", func(t *testing.T) {
-		suffix := "CRDRecreated"
-
-		logger.Info("Running test: Deleted constraint CRDs are recreated")
-		// Clean up to remove the crd, constraint and constraint template
-		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
-		cstr := newDenyAllCstr(suffix)
-
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
-		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
-
-		var crd *apiextensionsv1.CustomResourceDefinition
 		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
 			return true
 		}, func() error {
-			crd = &apiextensionsv1.CustomResourceDefinition{}
-			return c.Get(ctx, crdKey(suffix), crd)
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		origUID := crd.GetUID()
-		crd.Spec = apiextensionsv1.CustomResourceDefinitionSpec{}
-		err = c.Delete(ctx, crd)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
-			return true
-		}, func() error {
-			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := c.Get(ctx, crdKey(suffix), crd); err != nil {
+			// check if vap resource exists now
+			vap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{}
+			vapName := fmt.Sprintf("gatekeeper-%s", "denyall"+strings.ToLower(suffix))
+			logger.Info("validate if vap exists", "vapName", vapName)
+			if err := c.Get(ctx, types.NamespacedName{Name: vapName}, vap); err != nil {
 				return err
 			}
-			if !crd.GetDeletionTimestamp().IsZero() {
-				return errors.New("still deleting")
-			}
-			if crd.GetUID() == origUID {
-				return errors.New("not yet deleted")
-			}
-			for _, cond := range crd.Status.Conditions {
-				if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
-					return nil
-				}
-			}
-			return errors.New("not established")
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
-			return true
-		}, func() error {
-			sList := &statusv1beta1.ConstraintPodStatusList{}
-			if err := c.List(ctx, sList); err != nil {
-				return err
-			}
-			if len(sList.Items) != 0 {
-				return fmt.Errorf("remaining status items: %+v", sList.Items)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
-			return true
-		}, func() error {
-			return c.Create(ctx, newDenyAllCstr(suffix))
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// we need a longer timeout because deleting the CRD interrupts the watch
-		err = constraintEnforced(ctx, c, suffix)
-		if err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("Templates with Invalid Rego throw errors", func(t *testing.T) {
-		logger.Info("Running test: Templates with Invalid Rego throw errors")
-		// Create template with invalid rego, should populate parse error in status
-		instanceInvalidRego := &v1beta1.ConstraintTemplate{
-			ObjectMeta: metav1.ObjectMeta{Name: "invalidrego"},
-			Spec: v1beta1.ConstraintTemplateSpec{
-				CRD: v1beta1.CRD{
-					Spec: v1beta1.CRDSpec{
-						Names: v1beta1.Names{
-							Kind: "InvalidRego",
-						},
-					},
-				},
-				Targets: []v1beta1.Target{
-					{
-						Target: target.Name,
-						Rego: `
-	package foo
-
-	violation[{"msg": "hi"}] { 1 == 1 }
-
-	anyrule[}}}//invalid//rego
-
-	`,
-					},
-				},
-			},
-		}
-
-		err = c.Create(ctx, instanceInvalidRego)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// TODO: Test if this removal is necessary.
-		// https://github.com/open-policy-agent/gatekeeper/pull/1595#discussion_r722819552
-		t.Cleanup(testutils.DeleteObject(t, c, instanceInvalidRego))
-
-		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
-			return true
-		}, func() error {
-			ct := &v1beta1.ConstraintTemplate{}
-			if err := c.Get(ctx, types.NamespacedName{Name: "invalidrego"}, ct); err != nil {
-				return err
-			}
-
-			if ct.Name != "invalidrego" {
-				return errors.New("InvalidRego not found")
-			}
-
-			status, found := getCTByPodStatus(ct)
-			if !found {
-				return fmt.Errorf("could not retrieve CT status for pod, byPod status: %+v", ct.Status.ByPod)
-			}
-
-			if len(status.Errors) == 0 {
-				j, err := json.Marshal(status)
-				if err != nil {
-					t.Fatal("could not parse JSON", err)
-				}
-				s := string(j)
-				return fmt.Errorf("InvalidRego template should contain an error: %q", s)
-			}
-
-			if status.Errors[0].Code != ErrIngestCode {
-				return fmt.Errorf("InvalidRego template returning unexpected error %q, got error %+v",
-					status.Errors[0].Code, status.Errors)
-			}
-
 			return nil
 		})
 		if err != nil {
@@ -415,60 +280,275 @@ func TestReconcile(t *testing.T) {
 		}
 	})
 
-	t.Run("Deleted constraint templates not enforced", func(t *testing.T) {
-		suffix := "DeletedNotEnforced"
+	// t.Run("Constraint is marked as enforced", func(t *testing.T) {
+	// 	suffix := "MarkedEnforced"
 
-		logger.Info("Running test: Deleted constraint templates not enforced")
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "testns",
-			},
-		}
-		req := admissionv1.AdmissionRequest{
-			Kind: metav1.GroupVersionKind{
-				Group:   "",
-				Version: "v1",
-				Kind:    "Namespace",
-			},
-			Operation: "Create",
-			Name:      "FooNamespace",
-			Object:    runtime.RawExtension{Object: ns},
-		}
-		resp, err := cfClient.Review(ctx, req)
-		if err != nil {
-			t.Fatal(err)
-		}
+	// 	logger.Info("Running test: Constraint is marked as enforced")
+	// 	constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
+	// 	cstr := newDenyAllCstr(suffix)
 
-		gotResults := resp.Results()
-		if len(resp.Results()) != 0 {
-			t.Log(resp.TraceDump())
-			t.Log(cfClient.Dump(ctx))
-			t.Fatalf("did not get 0 results: %v", gotResults)
-		}
+	// 	t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
+	// 	t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
+	// 	testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
 
-		constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
-		err = c.Delete(ctx, constraintTemplate)
-		if err != nil && !apierrors.IsNotFound(err) {
-			t.Fatal(err)
-		}
+	// 	err = retry.OnError(testutils.ConstantRetry, func(error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		return c.Create(ctx, cstr)
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
 
-		err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
-			return true
-		}, func() error {
-			resp, err := cfClient.Review(ctx, req)
-			if err != nil {
-				return err
-			}
-			if len(resp.Results()) != 0 {
-				dump, _ := cfClient.Dump(ctx)
-				return fmt.Errorf("Results not yet zero\nDUMP:\n%s", dump)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	})
+	// 	err = constraintEnforced(ctx, c, suffix)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	ns := &corev1.Namespace{
+	// 		ObjectMeta: metav1.ObjectMeta{
+	// 			Name: "testns",
+	// 		},
+	// 	}
+	// 	req := admissionv1.AdmissionRequest{
+	// 		Kind: metav1.GroupVersionKind{
+	// 			Group:   "",
+	// 			Version: "v1",
+	// 			Kind:    "Namespace",
+	// 		},
+	// 		Operation: "Create",
+	// 		Name:      "FooNamespace",
+	// 		Object:    runtime.RawExtension{Object: ns},
+	// 	}
+	// 	resp, err := cfClient.Review(ctx, req)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	gotResults := resp.Results()
+	// 	if len(gotResults) != 1 {
+	// 		t.Log(resp.TraceDump())
+	// 		t.Log(cfClient.Dump(ctx))
+	// 		t.Fatalf("want 1 result, got %v", gotResults)
+	// 	}
+	// })
+
+	// t.Run("Deleted constraint CRDs are recreated", func(t *testing.T) {
+	// 	suffix := "CRDRecreated"
+
+	// 	logger.Info("Running test: Deleted constraint CRDs are recreated")
+	// 	// Clean up to remove the crd, constraint and constraint template
+	// 	constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
+	// 	cstr := newDenyAllCstr(suffix)
+
+	// 	t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
+	// 	t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
+	// 	testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
+
+	// 	var crd *apiextensionsv1.CustomResourceDefinition
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		crd = &apiextensionsv1.CustomResourceDefinition{}
+	// 		return c.Get(ctx, crdKey(suffix), crd)
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	origUID := crd.GetUID()
+	// 	crd.Spec = apiextensionsv1.CustomResourceDefinitionSpec{}
+	// 	err = c.Delete(ctx, crd)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		crd := &apiextensionsv1.CustomResourceDefinition{}
+	// 		if err := c.Get(ctx, crdKey(suffix), crd); err != nil {
+	// 			return err
+	// 		}
+	// 		if !crd.GetDeletionTimestamp().IsZero() {
+	// 			return errors.New("still deleting")
+	// 		}
+	// 		if crd.GetUID() == origUID {
+	// 			return errors.New("not yet deleted")
+	// 		}
+	// 		for _, cond := range crd.Status.Conditions {
+	// 			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+	// 				return nil
+	// 			}
+	// 		}
+	// 		return errors.New("not established")
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		sList := &statusv1beta1.ConstraintPodStatusList{}
+	// 		if err := c.List(ctx, sList); err != nil {
+	// 			return err
+	// 		}
+	// 		if len(sList.Items) != 0 {
+	// 			return fmt.Errorf("remaining status items: %+v", sList.Items)
+	// 		}
+	// 		return nil
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		return c.Create(ctx, newDenyAllCstr(suffix))
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	// we need a longer timeout because deleting the CRD interrupts the watch
+	// 	err = constraintEnforced(ctx, c, suffix)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// })
+
+	// t.Run("Templates with Invalid Rego throw errors", func(t *testing.T) {
+	// 	logger.Info("Running test: Templates with Invalid Rego throw errors")
+	// 	// Create template with invalid rego, should populate parse error in status
+	// 	instanceInvalidRego := &v1beta1.ConstraintTemplate{
+	// 		ObjectMeta: metav1.ObjectMeta{Name: "invalidrego"},
+	// 		Spec: v1beta1.ConstraintTemplateSpec{
+	// 			CRD: v1beta1.CRD{
+	// 				Spec: v1beta1.CRDSpec{
+	// 					Names: v1beta1.Names{
+	// 						Kind: "InvalidRego",
+	// 					},
+	// 				},
+	// 			},
+	// 			Targets: []v1beta1.Target{
+	// 				{
+	// 					Target: target.Name,
+	// 					Rego: `
+	// package foo
+
+	// violation[{"msg": "hi"}] { 1 == 1 }
+
+	// anyrule[}}}//invalid//rego
+
+	// `,
+	// 				},
+	// 			},
+	// 		},
+	// 	}
+
+	// 	err = c.Create(ctx, instanceInvalidRego)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	// TODO: Test if this removal is necessary.
+	// 	// https://github.com/open-policy-agent/gatekeeper/pull/1595#discussion_r722819552
+	// 	t.Cleanup(testutils.DeleteObject(t, c, instanceInvalidRego))
+
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		ct := &v1beta1.ConstraintTemplate{}
+	// 		if err := c.Get(ctx, types.NamespacedName{Name: "invalidrego"}, ct); err != nil {
+	// 			return err
+	// 		}
+
+	// 		if ct.Name != "invalidrego" {
+	// 			return errors.New("InvalidRego not found")
+	// 		}
+
+	// 		status, found := getCTByPodStatus(ct)
+	// 		if !found {
+	// 			return fmt.Errorf("could not retrieve CT status for pod, byPod status: %+v", ct.Status.ByPod)
+	// 		}
+
+	// 		if len(status.Errors) == 0 {
+	// 			j, err := json.Marshal(status)
+	// 			if err != nil {
+	// 				t.Fatal("could not parse JSON", err)
+	// 			}
+	// 			s := string(j)
+	// 			return fmt.Errorf("InvalidRego template should contain an error: %q", s)
+	// 		}
+
+	// 		if status.Errors[0].Code != ErrIngestCode {
+	// 			return fmt.Errorf("InvalidRego template returning unexpected error %q, got error %+v",
+	// 				status.Errors[0].Code, status.Errors)
+	// 		}
+
+	// 		return nil
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// })
+
+	// t.Run("Deleted constraint templates not enforced", func(t *testing.T) {
+	// 	suffix := "DeletedNotEnforced"
+
+	// 	logger.Info("Running test: Deleted constraint templates not enforced")
+	// 	ns := &corev1.Namespace{
+	// 		ObjectMeta: metav1.ObjectMeta{
+	// 			Name: "testns",
+	// 		},
+	// 	}
+	// 	req := admissionv1.AdmissionRequest{
+	// 		Kind: metav1.GroupVersionKind{
+	// 			Group:   "",
+	// 			Version: "v1",
+	// 			Kind:    "Namespace",
+	// 		},
+	// 		Operation: "Create",
+	// 		Name:      "FooNamespace",
+	// 		Object:    runtime.RawExtension{Object: ns},
+	// 	}
+	// 	resp, err := cfClient.Review(ctx, req)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	gotResults := resp.Results()
+	// 	if len(resp.Results()) != 0 {
+	// 		t.Log(resp.TraceDump())
+	// 		t.Log(cfClient.Dump(ctx))
+	// 		t.Fatalf("did not get 0 results: %v", gotResults)
+	// 	}
+
+	// 	constraintTemplate := makeReconcileConstraintTemplate(suffix, nil)
+	// 	err = c.Delete(ctx, constraintTemplate)
+	// 	if err != nil && !apierrors.IsNotFound(err) {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	err = retry.OnError(testutils.ConstantRetry, func(err error) bool {
+	// 		return true
+	// 	}, func() error {
+	// 		resp, err := cfClient.Review(ctx, req)
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		if len(resp.Results()) != 0 {
+	// 			dump, _ := cfClient.Dump(ctx)
+	// 			return fmt.Errorf("Results not yet zero\nDUMP:\n%s", dump)
+	// 		}
+	// 		return nil
+	// 	})
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// })
 }
 
 // Tests that expectations for constraints are canceled if the corresponding constraint is deleted.

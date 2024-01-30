@@ -2,13 +2,17 @@ package transform
 
 import (
 	"fmt"
+	"strings"
 
+	apiconstraints "github.com/open-policy-agent/frameworks/constraint/pkg/apis/constraints"
 	templatesv1beta1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/k8scel/schema"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 )
 
 func TemplateToPolicyDefinition(template *templates.ConstraintTemplate) (*admissionregistrationv1alpha1.ValidatingAdmissionPolicy, error) {
@@ -41,19 +45,19 @@ func TemplateToPolicyDefinition(template *templates.ConstraintTemplate) (*admiss
 
 	policy := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("g8r-%s", template.GetName()),
+			Name: fmt.Sprintf("gatekeeper-%s", template.GetName()),
 		},
 		Spec: admissionregistrationv1alpha1.ValidatingAdmissionPolicySpec{
 			ParamKind: &admissionregistrationv1alpha1.ParamKind{
-				APIVersion: templatesv1beta1.SchemeGroupVersion.Version,
+				APIVersion: fmt.Sprintf("%s/%s", apiconstraints.Group, templatesv1beta1.SchemeGroupVersion.Version),
 				Kind:       template.Spec.CRD.Spec.Names.Kind,
 			},
 			MatchConstraints: &admissionregistrationv1alpha1.MatchResources{
 				ResourceRules: []admissionregistrationv1alpha1.NamedRuleWithOperations{
 					{
-						RuleWithOperations: admissionregistrationv1.RuleWithOperations{
-							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.OperationAll},
-							Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"*"}, Resources: []string{"namespaces"}},
+						RuleWithOperations: admissionregistrationv1alpha1.RuleWithOperations{
+							Operations: []admissionregistrationv1alpha1.OperationType{admissionregistrationv1alpha1.OperationAll},
+							Rule:       admissionregistrationv1alpha1.Rule{APIGroups: []string{"*"}, APIVersions: []string{"*"}, Resources: []string{"*"}},
 						},
 					},
 				},
@@ -66,4 +70,62 @@ func TemplateToPolicyDefinition(template *templates.ConstraintTemplate) (*admiss
 		},
 	}
 	return policy, nil
+}
+
+func ConstraintToBinding(constraint *unstructured.Unstructured) (*admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding, error) {
+	enforcementActionStr, err := apiconstraints.GetEnforcementAction(constraint)
+	if err != nil {
+		return nil, err
+	}
+
+	var enforcementAction admissionregistrationv1alpha1.ValidationAction
+	switch enforcementActionStr {
+	case apiconstraints.EnforcementActionDeny:
+		enforcementAction = admissionregistrationv1alpha1.Deny
+	case "warn":
+		enforcementAction = admissionregistrationv1alpha1.Warn
+	default:
+		return nil, fmt.Errorf("%w: unrecognized enforcement action %s, must be `warn` or `deny`", ErrBadEnforcementAction, enforcementActionStr)
+	}
+
+	binding := &admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("gatekeeper-%s", constraint.GetName()),
+		},
+		Spec: admissionregistrationv1alpha1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName: fmt.Sprintf("gatekeeper-%s", strings.ToLower(constraint.GetKind())),
+			ParamRef: &admissionregistrationv1alpha1.ParamRef{
+				Name:                    constraint.GetName(),
+				ParameterNotFoundAction: ptr.To[admissionregistrationv1alpha1.ParameterNotFoundActionType](admissionregistrationv1alpha1.AllowAction),
+			},
+			MatchResources:    &admissionregistrationv1alpha1.MatchResources{},
+			ValidationActions: []admissionregistrationv1alpha1.ValidationAction{enforcementAction},
+		},
+	}
+	objectSelectorMap, found, err := unstructured.NestedMap(constraint.Object, "spec", "match", "labelSelector")
+	if err != nil {
+		return nil, err
+	}
+	var objectSelector *metav1.LabelSelector
+	if found {
+		objectSelector = &metav1.LabelSelector{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(objectSelectorMap, objectSelector); err != nil {
+			return nil, err
+		}
+		binding.Spec.MatchResources.ObjectSelector = objectSelector
+	}
+
+	namespaceSelectorMap, found, err := unstructured.NestedMap(constraint.Object, "spec", "match", "namespaceSelector")
+	if err != nil {
+		return nil, err
+	}
+	var namespaceSelector *metav1.LabelSelector
+	if found {
+		namespaceSelector = &metav1.LabelSelector{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(namespaceSelectorMap, namespaceSelector); err != nil {
+			return nil, err
+		}
+		binding.Spec.MatchResources.NamespaceSelector = namespaceSelector
+	}
+	return binding, nil
 }
