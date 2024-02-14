@@ -62,6 +62,10 @@ func (f *fakeCacheInformer) AddIndexers(_ kcache.Indexers) error {
 	return errors.New("not implemented")
 }
 
+func (f *fakeCacheInformer) IsStopped() bool {
+	return false
+}
+
 func (f *fakeCacheInformer) HasSynced() bool {
 	return false
 }
