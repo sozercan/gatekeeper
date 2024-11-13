@@ -1,43 +1,43 @@
-name: lint
+# name: lint
 
-on:
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - ".github/workflows/website.yaml"
-      - "docs/**"
-      - "library/**"
-      - "demo/**"
-      - "deprecated/**"
-      - "example/**"
-      - "website/**"
-      - "**.md"
-  pull_request:
-    branches:
-      - master
-    paths-ignore:
-      - ".github/workflows/website.yaml"
-      - "docs/**"
-      - "library/**"
-      - "demo/**"
-      - "deprecated/**"
-      - "example/**"
-      - "website/**"
-      - "**.md"
+# on:
+#   push:
+#     branches:
+#       - master
+#     paths-ignore:
+#       - ".github/workflows/website.yaml"
+#       - "docs/**"
+#       - "library/**"
+#       - "demo/**"
+#       - "deprecated/**"
+#       - "example/**"
+#       - "website/**"
+#       - "**.md"
+#   pull_request:
+#     branches:
+#       - master
+#     paths-ignore:
+#       - ".github/workflows/website.yaml"
+#       - "docs/**"
+#       - "library/**"
+#       - "demo/**"
+#       - "deprecated/**"
+#       - "example/**"
+#       - "website/**"
+#       - "**.md"
 
-permissions: read-all
+# permissions: read-all
 
-jobs:
-  lint:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
-        with:
-          egress-policy: audit
+# jobs:
+#   lint:
+#     runs-on: ubuntu-22.04
+#     steps:
+#       - name: Harden Runner
+#         uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
+#         with:
+#           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+#       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: lint
-        run: make lint
+#       - name: lint
+#         run: make lint

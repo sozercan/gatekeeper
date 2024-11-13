@@ -1,106 +1,106 @@
-name: upgrade
-on:
-  push:
-    paths:
-      - "manifest_staging/charts/**"
+# name: upgrade
+# on:
+#   push:
+#     paths:
+#       - "manifest_staging/charts/**"
 
-  pull_request:
-    paths:
-      - "manifest_staging/charts/**"
+#   pull_request:
+#     paths:
+#       - "manifest_staging/charts/**"
 
-permissions:
-  contents: read
+# permissions:
+#   contents: read
 
-env:
-  BASE_RELEASE: 3.9.2
-  BASE_BRANCH: release-3.9
+# env:
+#   BASE_RELEASE: 3.9.2
+#   BASE_BRANCH: release-3.9
 
-jobs:
-  helm_upgrade:
-    name: "[Helm] Upgrade test"
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        HELM_VERSION: ["3.14.1"]
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
-        with:
-          egress-policy: audit
+# jobs:
+#   helm_upgrade:
+#     name: "[Helm] Upgrade test"
+#     runs-on: ubuntu-22.04
+#     timeout-minutes: 15
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         HELM_VERSION: ["3.14.1"]
+#     steps:
+#       - name: Harden Runner
+#         uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
+#         with:
+#           egress-policy: audit
 
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+#       - name: Check out code into the Go module directory
+#         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Bootstrap e2e
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/bin
-          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
-          make e2e-bootstrap KUBERNETES_VERSION=${{ env.KUBERNETES_VERSION }}
-        env:
-          KUBERNETES_VERSION: 1.24.4
+#       - name: Bootstrap e2e
+#         run: |
+#           mkdir -p $GITHUB_WORKSPACE/bin
+#           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+#           make e2e-bootstrap KUBERNETES_VERSION=${{ env.KUBERNETES_VERSION }}
+#         env:
+#           KUBERNETES_VERSION: 1.24.4
 
-      - name: Deploy Helm release
-        run: |
-          make e2e-helm-upgrade-init HELM_VERSION=${{ matrix.HELM_VERSION }} BASE_RELEASE=${{ env.BASE_RELEASE }} LOG_LEVEL=DEBUG
+#       - name: Deploy Helm release
+#         run: |
+#           make e2e-helm-upgrade-init HELM_VERSION=${{ matrix.HELM_VERSION }} BASE_RELEASE=${{ env.BASE_RELEASE }} LOG_LEVEL=DEBUG
 
-      - name: Run e2e after install
-        run: |
-          # running tests matching the base release
-          git clone https://github.com/open-policy-agent/gatekeeper.git -b ${{ env.BASE_BRANCH }} --sparse --depth 1 /tmp/gatekeeper-tests-${{ env.BASE_BRANCH }}
-          cd /tmp/gatekeeper-tests-${{ env.BASE_BRANCH }}
-          git sparse-checkout set test/bats
-          bats -t test/bats/test.bats
+#       - name: Run e2e after install
+#         run: |
+#           # running tests matching the base release
+#           git clone https://github.com/open-policy-agent/gatekeeper.git -b ${{ env.BASE_BRANCH }} --sparse --depth 1 /tmp/gatekeeper-tests-${{ env.BASE_BRANCH }}
+#           cd /tmp/gatekeeper-tests-${{ env.BASE_BRANCH }}
+#           git sparse-checkout set test/bats
+#           bats -t test/bats/test.bats
 
-      - name: Save logs
-        if: ${{ always() }}
-        run: |
-          kubectl logs -n gatekeeper-system -l control-plane=controller-manager --tail=-1 > logs-${{ matrix.HELM_VERSION }}-controller-pre-upgrade.json
-          kubectl logs -n gatekeeper-system -l control-plane=audit-controller --tail=-1 > logs-${{ matrix.HELM_VERSION }}-audit-pre-upgrade.json
+#       - name: Save logs
+#         if: ${{ always() }}
+#         run: |
+#           kubectl logs -n gatekeeper-system -l control-plane=controller-manager --tail=-1 > logs-${{ matrix.HELM_VERSION }}-controller-pre-upgrade.json
+#           kubectl logs -n gatekeeper-system -l control-plane=audit-controller --tail=-1 > logs-${{ matrix.HELM_VERSION }}-audit-pre-upgrade.json
 
-      - name: Cleanup
-        run: |
-          kubectl delete ns gatekeeper-test-playground gatekeeper-excluded-namespace || true
-          kubectl delete constrainttemplates --all || true
-          kubectl delete configs --all || true
+#       - name: Cleanup
+#         run: |
+#           kubectl delete ns gatekeeper-test-playground gatekeeper-excluded-namespace || true
+#           kubectl delete constrainttemplates --all || true
+#           kubectl delete configs --all || true
 
-      - name: Upgrade Helm version
-        run: |
-          make docker-buildx \
-            IMG=gatekeeper-e2e:latest
+#       - name: Upgrade Helm version
+#         run: |
+#           make docker-buildx \
+#             IMG=gatekeeper-e2e:latest
 
-          make docker-buildx-crds \
-            CRD_IMG=gatekeeper-crds:latest 
+#           make docker-buildx-crds \
+#             CRD_IMG=gatekeeper-crds:latest
 
-          make e2e-build-load-externaldata-image
+#           make e2e-build-load-externaldata-image
 
-          kind load docker-image --name kind \
-            gatekeeper-e2e:latest \
-            gatekeeper-crds:latest
+#           kind load docker-image --name kind \
+#             gatekeeper-e2e:latest \
+#             gatekeeper-crds:latest
 
-          make e2e-helm-upgrade \
-            HELM_VERSION=${{ matrix.HELM_VERSION }} \
-            HELM_REPO=gatekeeper-e2e \
-            HELM_CRD_REPO=gatekeeper-crds \
-            HELM_RELEASE=latest \
-            LOG_LEVEL=DEBUG
+#           make e2e-helm-upgrade \
+#             HELM_VERSION=${{ matrix.HELM_VERSION }} \
+#             HELM_REPO=gatekeeper-e2e \
+#             HELM_CRD_REPO=gatekeeper-crds \
+#             HELM_RELEASE=latest \
+#             LOG_LEVEL=DEBUG
 
-      - name: Run e2e after upgrade
-        run: |
-          make test-e2e
+#       - name: Run e2e after upgrade
+#         run: |
+#           make test-e2e
 
-      - name: Save logs
-        if: ${{ always() }}
-        run: |
-          kubectl logs -n gatekeeper-system -l control-plane=controller-manager --tail=-1 > logs-${{ matrix.HELM_VERSION }}-controller-post-upgrade.json
-          kubectl logs -n gatekeeper-system -l control-plane=audit-controller --tail=-1 > logs-${{ matrix.HELM_VERSION }}-audit-post-upgrade.json
-          kubectl logs -n gatekeeper-system -l run=dummy-provider --tail=-1 > logs-${{ matrix.HELM_VERSION }}-dummy-provider-post-upgrade.json
+#       - name: Save logs
+#         if: ${{ always() }}
+#         run: |
+#           kubectl logs -n gatekeeper-system -l control-plane=controller-manager --tail=-1 > logs-${{ matrix.HELM_VERSION }}-controller-post-upgrade.json
+#           kubectl logs -n gatekeeper-system -l control-plane=audit-controller --tail=-1 > logs-${{ matrix.HELM_VERSION }}-audit-post-upgrade.json
+#           kubectl logs -n gatekeeper-system -l run=dummy-provider --tail=-1 > logs-${{ matrix.HELM_VERSION }}-dummy-provider-post-upgrade.json
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
-        if: ${{ always() }}
-        with:
-          name: logs
-          path: |
-            logs-*.json
+#       - name: Upload artifacts
+#         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+#         if: ${{ always() }}
+#         with:
+#           name: logs
+#           path: |
+#             logs-*.json

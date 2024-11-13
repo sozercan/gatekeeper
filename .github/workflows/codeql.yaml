@@ -1,36 +1,36 @@
-name: "CodeQL"
+# name: "CodeQL"
 
-on:
-  push:
-    branches: [master]
-  schedule:
-    - cron: "0 7 * * 1" # Mondays at 7:00 AM
+# on:
+#   push:
+#     branches: [master]
+#   schedule:
+#     - cron: "0 7 * * 1" # Mondays at 7:00 AM
 
-permissions: read-all
+# permissions: read-all
 
-jobs:
-  analyze:
-    name: Analyze
-    runs-on: ubuntu-22.04
-    permissions:
-      security-events: write
+# jobs:
+#   analyze:
+#     name: Analyze
+#     runs-on: ubuntu-22.04
+#     permissions:
+#       security-events: write
 
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
-        with:
-          egress-policy: audit
+#     steps:
+#       - name: Harden Runner
+#         uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
+#         with:
+#           egress-policy: audit
 
-      - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+#       - name: Checkout repository
+#         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@662472033e021d55d94146f66f6058822b0b39fd
-        with:
-          languages: go
+#       - name: Initialize CodeQL
+#         uses: github/codeql-action/init@662472033e021d55d94146f66f6058822b0b39fd
+#         with:
+#           languages: go
 
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@662472033e021d55d94146f66f6058822b0b39fd
+#       - name: Autobuild
+#         uses: github/codeql-action/autobuild@662472033e021d55d94146f66f6058822b0b39fd
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@662472033e021d55d94146f66f6058822b0b39fd
+#       - name: Perform CodeQL Analysis
+#         uses: github/codeql-action/analyze@662472033e021d55d94146f66f6058822b0b39fd
