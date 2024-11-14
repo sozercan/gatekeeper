@@ -1,6 +1,6 @@
 name: pre-release
 on:
-  pull_request:
+  push:
     branches:
       - feature/release-to-ghcr
 
