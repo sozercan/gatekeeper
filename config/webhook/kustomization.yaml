@@ -6,4 +6,6 @@ configurations:
 - kustomizeconfig.yaml
 
 patchesStrategicMerge:
-  - webhook_patch.yaml
+- webhook_patch.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
