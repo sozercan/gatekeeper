@@ -28,7 +28,7 @@ var Connections = &Dapr{
 	openConnections: make(map[string]Connection),
 }
 
-func (r *Dapr) Publish(_ context.Context, connectionName string, data interface{}, topic string) error {
+func (r *Dapr) Publish(ctx context.Context, connectionName string, data interface{}, topic string) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("error marshaling data: %w", err)
@@ -38,7 +38,7 @@ func (r *Dapr) Publish(_ context.Context, connectionName string, data interface{
 	if !ok {
 		return fmt.Errorf("connection not found: %s for Dapr driver", connectionName)
 	}
-	err = conn.client.PublishEvent(context.Background(), conn.component, topic, jsonData)
+	err = conn.client.PublishEvent(ctx, conn.component, topic, jsonData)
 	if err != nil {
 		return fmt.Errorf("error publishing message to dapr: %w", err)
 	}

@@ -83,6 +83,9 @@ auditEventsInvolvedNamespace: false
 resourceQuota: true
 externaldataProviderResponseCacheTTL: 3m
 enableK8sNativeValidation: true
+# Enables the declarative runtime.gatekeeper.sh ConstraintTemplate target.
+# Gatekeeper Runtime CRDs and its separately privileged controller/agent must be installed independently.
+enableRuntimeTarget: false
 commonAnnotations: {}
 extraVolumeMounts: []
 extraVolumes: []
@@ -276,8 +279,30 @@ controllerManager:
       #       cidr: 0.0.0.0/0
   disableWebhookOperation: false
   disableGenerateOperation: true
+admission:
+  exportSidecar:
+    name: admission-reader
+    image: ghcr.io/open-policy-agent/fake-reader:latest
+    imagePullPolicy: Always
+    env:
+      - name: DELETE_AFTER_READ
+        value: "true"
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+      runAsGroup: 999
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault
+  disableExportSidecar: true
 exportBackend: ""
 audit:
+  connection: audit-connection
+  channel: audit-channel
   exportConnection:
     path: /tmp/violations/topics
     maxAuditResults: 3

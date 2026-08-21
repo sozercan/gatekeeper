@@ -103,6 +103,7 @@ spec:
         - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL
           }}
         - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
+        - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
 
         {{- if hasKey .Values "defaultK8sNativeValidationFailurePolicy"}}
         - --default-k8s-native-validation-failure-policy={{ .Values.defaultK8sNativeValidationFailurePolicy }}

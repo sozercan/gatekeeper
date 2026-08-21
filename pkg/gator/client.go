@@ -6,6 +6,7 @@ import (
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/reviews"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -30,4 +31,19 @@ type Client interface {
 
 	// Review runs all Constraints against obj.
 	Review(ctx context.Context, obj interface{}, opts ...reviews.ReviewOpt) (*types.Responses, error)
+}
+
+type runtimeTemplateValidatingClient struct {
+	Client
+}
+
+func (c runtimeTemplateValidatingClient) AddTemplate(ctx context.Context, template *templates.ConstraintTemplate) (*types.Responses, error) {
+	if _, err := runtimepolicy.ValidateTemplate(template); err != nil {
+		return nil, err
+	}
+	return c.Client.AddTemplate(ctx, template)
+}
+
+func withRuntimeTemplateValidation(client Client) Client {
+	return runtimeTemplateValidatingClient{Client: client}
 }

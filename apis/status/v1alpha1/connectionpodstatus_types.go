@@ -40,7 +40,7 @@ type ConnectionPodStatusStatus struct {
 	// +kubebuilder:validation:MaxItems=500
 	ConnectionErrors []*ConnectionError `json:"connectionErrors,omitempty"`
 	// PublishStatuses reports publishing health independently for each source.
-	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:MaxItems=3
 	// +listType=map
 	// +listMapKey=source
 	PublishStatuses []ConnectionPublishStatus `json:"publishStatuses,omitempty"`
@@ -63,7 +63,7 @@ type ConnectionPublishStatus struct {
 }
 
 // ConnectionPublishSource identifies a producer that publishes violations.
-// +kubebuilder:validation:Enum=audit;webhook
+// +kubebuilder:validation:Enum=audit;webhook;runtime
 type ConnectionPublishSource string
 
 const (
@@ -71,6 +71,8 @@ const (
 	AuditPublishSource ConnectionPublishSource = "audit"
 	// WebhookPublishSource identifies the validation webhook publisher.
 	WebhookPublishSource ConnectionPublishSource = "webhook"
+	// RuntimePublishSource identifies the authenticated runtime finding publisher.
+	RuntimePublishSource ConnectionPublishSource = "runtime"
 )
 
 type ConnectionError struct {

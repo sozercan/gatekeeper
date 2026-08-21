@@ -33,13 +33,14 @@ import (
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "export_controller")
 
 type Adder struct {
-	ExportSystem export.Exporter
+	ExportSystem         export.Exporter
+	RuntimeExportEnabled bool
 	// GetPod returns an instance of the currently running Gatekeeper pod
 	GetPod func(context.Context) (*corev1.Pod, error)
 }
 
 func (a *Adder) Add(mgr manager.Manager) error {
-	r := newReconciler(mgr, a.ExportSystem, *exportutil.AuditConnection, a.GetPod)
+	r := newReconciler(mgr, a.ExportSystem, *exportutil.AuditConnection, a.GetPod, a.RuntimeExportEnabled)
 	if r == nil {
 		log.Info("Export functionality is disabled, skipping export connection controller setup")
 		return nil
@@ -57,18 +58,24 @@ func (a *Adder) InjectGetPod(getPod func(ctx context.Context) (*corev1.Pod, erro
 	a.GetPod = getPod
 }
 
+func (a *Adder) InjectRuntimeExportEnabled(enabled bool) {
+	a.RuntimeExportEnabled = enabled
+}
+
 type Reconciler struct {
 	reader client.Reader
 	writer client.Writer
 	scheme *runtime.Scheme
 	system export.Exporter
 	// TODO: Refactor this once multiple connections are supported, for now this helps with injecting dependency for tests
-	auditConnectionName string
-	getPod              func(context.Context) (*corev1.Pod, error)
+	auditConnectionName  string
+	runtimeExportEnabled bool
+	getPod               func(context.Context) (*corev1.Pod, error)
 }
 
-func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionName string, getPod func(context.Context) (*corev1.Pod, error)) *Reconciler {
-	if !*exportutil.ExportEnabled && !*exportutil.AdmissionExportEnabled {
+func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionName string, getPod func(context.Context) (*corev1.Pod, error), runtimeExportEnabled ...bool) *Reconciler {
+	runtimeEnabled := len(runtimeExportEnabled) != 0 && runtimeExportEnabled[0]
+	if !*exportutil.ExportEnabled && !*exportutil.AdmissionExportEnabled && !runtimeEnabled {
 		log.Info("Export is disabled via flag")
 		return nil
 	}
@@ -76,12 +83,13 @@ func newReconciler(mgr manager.Manager, system export.Exporter, auditConnectionN
 	log.Info("Warning: Alpha violation export is enabled. This feature may change in the future.")
 
 	return &Reconciler{
-		reader:              mgr.GetCache(),
-		writer:              mgr.GetClient(),
-		scheme:              mgr.GetScheme(),
-		system:              system,
-		auditConnectionName: auditConnectionName,
-		getPod:              getPod,
+		reader:               mgr.GetCache(),
+		writer:               mgr.GetClient(),
+		scheme:               mgr.GetScheme(),
+		system:               system,
+		auditConnectionName:  auditConnectionName,
+		runtimeExportEnabled: runtimeEnabled,
+		getPod:               getPod,
 	}
 }
 
@@ -179,8 +187,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		log.Info("removed connection", "name", request.Name)
 		return reconcile.Result{}, deleteStatus(ctx, r.writer, request.Namespace, request.Name, r.getPod)
 	}
-	if request.Name != r.auditConnectionName {
-		err := fmt.Errorf("error unsupported connection name %s. Connection name should align with flag --audit-connection set or defaulted to '%s'", request.Name, r.auditConnectionName)
+	if !r.supportsConnection(connObj) {
+		err := fmt.Errorf("unsupported connection %s/%s: not enabled for an active export source", request.Namespace, request.Name)
 		log.Error(err, "unsupported connection", "namespace", request.Namespace)
 		connectionErrors := []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}
 		return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, connectionErrors, nil, r.getPod)
@@ -193,6 +201,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	log.Info("Connection upsert successful", "name", request.Name, "driver", connObj.Spec.Driver)
 	return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, nil, nil, r.getPod)
+}
+
+func (r *Reconciler) supportsConnection(connection *connectionv1alpha1.Connection) bool {
+	if connection == nil {
+		return false
+	}
+	if r.runtimeExportEnabled && connection.Spec.AllowsSource(connectionv1alpha1.RuntimeSource) {
+		return true
+	}
+	if connection.GetName() != r.auditConnectionName {
+		return false
+	}
+	// Omitted sources preserve the existing single audit/admission Connection.
+	if len(connection.Spec.Sources) == 0 {
+		return *exportutil.ExportEnabled || *exportutil.AdmissionExportEnabled
+	}
+	return (*exportutil.ExportEnabled && connection.Spec.AllowsSource(connectionv1alpha1.AuditSource)) ||
+		(*exportutil.AdmissionExportEnabled && connection.Spec.AllowsSource(connectionv1alpha1.WebhookSource))
 }
 
 // UpdateOrCreateConnectionPodStatus records Connection reconciliation errors for
@@ -230,7 +256,7 @@ func UpdateConnectionPodPublishStatus(
 	getPod func(context.Context) (*corev1.Pod, error),
 ) error {
 	switch publishStatus.Source {
-	case statusv1alpha1.AuditPublishSource, statusv1alpha1.WebhookPublishSource:
+	case statusv1alpha1.AuditPublishSource, statusv1alpha1.WebhookPublishSource, statusv1alpha1.RuntimePublishSource:
 	default:
 		return fmt.Errorf("unsupported publish status source %q", publishStatus.Source)
 	}

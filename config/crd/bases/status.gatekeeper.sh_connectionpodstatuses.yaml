@@ -114,11 +114,12 @@ spec:
                       enum:
                       - audit
                       - webhook
+                      - runtime
                       type: string
                   required:
                   - source
                   type: object
-                maxItems: 2
+                maxItems: 3
                 type: array
                 x-kubernetes-list-map-keys:
                 - source

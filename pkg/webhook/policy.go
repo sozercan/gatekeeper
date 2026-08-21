@@ -48,6 +48,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/modifyset"
 	mutationtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -586,6 +587,9 @@ func (h *validationHandler) validateTemplate(ctx context.Context, req *admission
 				}
 			}
 		}
+	}
+	if _, err := runtimepolicy.ValidateTemplate(unversioned); err != nil {
+		return true, err
 	}
 
 	// Ensure that it is possible to generate a CRD for this ConstraintTemplate.

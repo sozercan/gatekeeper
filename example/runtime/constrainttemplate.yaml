@@ -1,0 +1,60 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: runtimeprocess
+spec:
+  crd:
+    spec:
+      names:
+        kind: RuntimeProcess
+      validation:
+        openAPIV3Schema:
+          type: object
+          required:
+          - behaviors
+          properties:
+            failurePolicy:
+              type: string
+              enum:
+              - FailOpen
+              - FailClosed
+              default: FailOpen
+            behaviors:
+              type: object
+              required:
+              - process
+              properties:
+                process:
+                  type: object
+                  properties:
+                    defaultAction:
+                      type: string
+                      enum:
+                      - Allow
+                      - Deny
+                      default: Allow
+                    executables:
+                      type: array
+                      maxItems: 1024
+                      items:
+                        type: object
+                        required:
+                        - path
+                        - action
+                        properties:
+                          path:
+                            type: string
+                            minLength: 1
+                            maxLength: 4096
+                            pattern: ^/
+                          action:
+                            type: string
+                            enum:
+                            - Allow
+                            - Deny
+  targets:
+  - target: runtime.gatekeeper.sh
+    code:
+    - engine: Runtime
+      source:
+        version: v1alpha1

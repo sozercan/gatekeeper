@@ -19,6 +19,7 @@ const (
 	Sync     = Process("sync")
 	Webhook  = Process("webhook")
 	Mutation = Process("mutation-webhook")
+	Runtime  = Process("runtime")
 	Star     = Process("*")
 )
 
@@ -32,6 +33,7 @@ var allProcesses = []Process{
 	Webhook,
 	Mutation,
 	Sync,
+	Runtime,
 }
 
 var processExcluder = &Excluder{

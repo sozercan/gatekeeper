@@ -14,6 +14,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator/expand"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator/reader"
 	mutationtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,7 +32,10 @@ func init() {
 }
 
 func Test(objs []*unstructured.Unstructured, opts ...gator.Opt) (*GatorResponses, error) {
-	args := []constraintclient.Opt{constraintclient.Targets(&target.K8sValidationTarget{})}
+	args := []constraintclient.Opt{
+		constraintclient.Targets(&target.K8sValidationTarget{}, &runtimepolicy.Target{}),
+		constraintclient.Driver(runtimepolicy.NewOfflineDriver()),
+	}
 
 	driverArgs := []rego.Arg{}
 
@@ -67,6 +71,9 @@ func Test(objs []*unstructured.Unstructured, opts ...gator.Opt) (*GatorResponses
 		templ, err := reader.ToTemplate(scheme, obj)
 		if err != nil {
 			return nil, fmt.Errorf("converting unstructured %q to template: %w", obj.GetName(), err)
+		}
+		if _, err := runtimepolicy.ValidateTemplate(templ); err != nil {
+			return nil, fmt.Errorf("validating template %q: %w", templ.GetName(), err)
 		}
 
 		_, err = client.AddTemplate(ctx, templ)

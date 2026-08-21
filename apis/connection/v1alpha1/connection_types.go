@@ -33,6 +33,35 @@ type ConnectionSpec struct {
 	// +kubebuilder:validation:Schemaless
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Config *types.Anything `json:"config"`
+	// Sources restricts which producers may use this Connection. An omitted
+	// list preserves the legacy audit/webhook behavior; external runtime
+	// producers must be explicitly enabled with "runtime".
+	// +kubebuilder:validation:MaxItems=3
+	// +kubebuilder:validation:XValidation:rule="!self.exists(source, source == 'runtime') || self.size() == 1",message="runtime must be the only source in a Connection"
+	// +listType=set
+	Sources []ConnectionSource `json:"sources,omitempty"`
+}
+
+// ConnectionSource identifies a producer permitted to publish through a
+// Connection.
+// +kubebuilder:validation:Enum=audit;webhook;runtime
+type ConnectionSource string
+
+const (
+	AuditSource   ConnectionSource = "audit"
+	WebhookSource ConnectionSource = "webhook"
+	RuntimeSource ConnectionSource = "runtime"
+)
+
+// AllowsSource reports whether source is explicitly enabled. Runtime is never
+// implied by an omitted source list because it is an external producer.
+func (spec ConnectionSpec) AllowsSource(source ConnectionSource) bool {
+	for _, configured := range spec.Sources {
+		if configured == source {
+			return true
+		}
+	}
+	return false
 }
 
 // ConnectionStatus defines the observed state of Connection.

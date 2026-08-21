@@ -1,0 +1,33 @@
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - runtime.gatekeeper.sh
+    resources:
+    - runtimepolicies
+    verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - authentication.k8s.io
+    resources:
+    - tokenreviews
+    verbs:
+    - create
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - authorization.k8s.io
+    resources:
+    - subjectaccessreviews
+    verbs:
+    - create

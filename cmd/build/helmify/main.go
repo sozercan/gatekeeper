@@ -25,6 +25,33 @@ const (
 	DeploymentKind     = "Deployment"
 	ServiceAccountKind = "ServiceAccount"
 	end                = "{{- end }}"
+	runtimePolicyRBAC  = `{{- if .Values.enableRuntimeTarget }}
+- apiGroups:
+  - runtime.gatekeeper.sh
+  resources:
+  - runtimepolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+{{- end }}
+`
 )
 
 func isRbacKind(str string) bool {
@@ -175,6 +202,9 @@ func (ks *kindSet) Write() error {
 			if name == "gatekeeper-manager-role" && kind == "ClusterRole" {
 				obj = strings.Replace(obj, "- gatekeeper-validating-webhook-configuration\n", "- {{ .Values.validatingWebhookName }}\n  {{- range $additionalValidatingWebhookConfig := .Values.additionalValidatingWebhookConfigsToRotateCerts }}\n  - {{ $additionalValidatingWebhookConfig }}\n  {{- end }}\n", 1)
 				obj = strings.Replace(obj, "- gatekeeper-mutating-webhook-configuration\n", "- {{ .Values.mutatingWebhookName }}\n  {{- range $additionalMutatingWebhookConfig := .Values.additionalMutatingWebhookConfigsToRotateCerts }}\n  - {{ $additionalMutatingWebhookConfig }}\n  {{- end }}\n", 1)
+				if strings.HasSuffix(obj, end+"\n") {
+					obj = strings.TrimSuffix(obj, end+"\n") + runtimePolicyRBAC + end + "\n"
+				}
 			}
 
 			fmt.Printf("Writing %s\n", destFile)

@@ -176,4 +176,30 @@ rules:
   - patch
   - update
   - watch
+{{- if .Values.enableRuntimeTarget }}
+- apiGroups:
+  - runtime.gatekeeper.sh
+  resources:
+  - runtimepolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+{{- end }}
 {{- end }}

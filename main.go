@@ -36,6 +36,7 @@ import (
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
 	frameworksexternaldata "github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
+	frameworkshandler "github.com/open-policy-agent/frameworks/constraint/pkg/handler"
 	api "github.com/open-policy-agent/gatekeeper/v3/apis"
 	configv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
 	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
@@ -60,6 +61,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness/pruner"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/routing"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/syncutil"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/upgrade"
@@ -125,6 +127,7 @@ var (
 	enableK8sCel                         = flag.Bool("enable-k8s-native-validation", true, "enable the validating admission policy driver")
 	externaldataProviderResponseCacheTTL = flag.Duration("external-data-provider-response-cache-ttl", 3*time.Minute, "TTL for the external data provider response cache. Specify the duration in 'h', 'm', or 's' for hours, minutes, or seconds respectively. Defaults to 3 minutes if unspecified. Setting the TTL to 0 disables the cache.")
 	enableReferential                    = flag.Bool("enable-referential-rules", true, "Enable referential rules. This flag defaults to true. Set this value to false if you want to disallow referential constraints. Because referential constraints read objects other than the object-under-test, they may be subject to race conditions. Users concerned about this may want to disable referential rules")
+	enableRuntimeTarget                  = flag.Bool("enable-runtime-target", false, "Enable the runtime.gatekeeper.sh ConstraintTemplate target and RuntimePolicy projection. Requires the Gatekeeper Runtime CRDs and separate runtime controller/agent installation.")
 	shutdownDelay                        = flag.Int("shutdown-delay", 10, "Time in seconds the controller runtime shutdown gets delayed after receiving a pod termination event. Prevents failing webhooks on pod shutdown. default: 10")
 )
 
@@ -463,11 +466,22 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.
 		mutationOpts.ClientCertWatcher = certWatcher
 	}
 
-	cfArgs := []constraintclient.Opt{constraintclient.Targets(&target.K8sValidationTarget{})}
+	targets := []frameworkshandler.TargetHandler{&target.K8sValidationTarget{}}
+	var runtimeDriver *runtimepolicy.Driver
+	if *enableRuntimeTarget {
+		runtimeDriver = runtimepolicy.NewDriver(mgr.GetClient(), mgr.GetAPIReader(), func() []string {
+			return process.Get().GetExcludedNamespaces(process.Runtime)
+		})
+		targets = append(targets, &runtimepolicy.Target{})
+	}
+	cfArgs := []constraintclient.Opt{constraintclient.Targets(targets...)}
 
 	var client *constraintclient.Client
 
 	if operations.HasValidationOperations() {
+		if runtimeDriver != nil {
+			cfArgs = append(cfArgs, constraintclient.Driver(runtimeDriver))
+		}
 		if *enableK8sCel {
 			k8sDriver, err := k8scel.New()
 			if err != nil {
@@ -580,16 +594,18 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.
 	}
 
 	opts := controller.Dependencies{
-		CFClient:        client,
-		WatchManger:     wm,
-		SyncEventsCh:    events,
-		CacheMgr:        cm,
-		Tracker:         tracker,
-		ProcessExcluder: processExcluder,
-		MutationSystem:  mutationSystem,
-		ExpansionSystem: expansionSystem,
-		ProviderCache:   providerCache,
-		ExportSystem:    exportSystem,
+		CFClient:             client,
+		WatchManger:          wm,
+		SyncEventsCh:         events,
+		CacheMgr:             cm,
+		Tracker:              tracker,
+		ProcessExcluder:      processExcluder,
+		MutationSystem:       mutationSystem,
+		ExpansionSystem:      expansionSystem,
+		ProviderCache:        providerCache,
+		ExportSystem:         exportSystem,
+		RuntimeProjector:     runtimeDriver,
+		RuntimeExportEnabled: runtimeDriver != nil && operations.IsAssigned(operations.Webhook),
 	}
 
 	if operations.IsAssigned(operations.Generate) {
@@ -605,12 +621,13 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.
 	if operations.IsAssigned(operations.Webhook) || operations.IsAssigned(operations.MutationWebhook) {
 		setupLog.Info("setting up webhooks")
 		webhookDeps := webhook.Dependencies{
-			OpaClient:       client,
-			ProcessExcluder: processExcluder,
-			MutationSystem:  mutationSystem,
-			ExpansionSystem: expansionSystem,
-			ExportSystem:    exportSystem,
-			GetPod:          opts.GetPod,
+			OpaClient:            client,
+			ProcessExcluder:      processExcluder,
+			MutationSystem:       mutationSystem,
+			ExpansionSystem:      expansionSystem,
+			ExportSystem:         exportSystem,
+			GetPod:               opts.GetPod,
+			RuntimeExportEnabled: opts.RuntimeExportEnabled,
 		}
 		if err := webhook.AddToManager(mgr, webhookDeps); err != nil {
 			setupLog.Error(err, "unable to register webhooks with the manager")

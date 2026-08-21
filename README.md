@@ -21,6 +21,10 @@ Check out the [installation instructions](https://open-policy-agent.github.io/ga
 
 Please see the [Gatekeeper website](https://open-policy-agent.github.io/gatekeeper/website/docs/howto) for more in-depth information.
 
+The opt-in [Gatekeeper Runtime ConstraintTemplate target](docs/runtime-target.md)
+projects bounded runtime constraints to a separately installed Gatekeeper
+Runtime control plane without adding node privileges to Gatekeeper.
+
 ## Policy Library
 
 See the [Gatekeeper policy library](https://open-policy-agent.github.io/gatekeeper-library/website/) for a collection of constraint templates and sample constraints that you can use with Gatekeeper.

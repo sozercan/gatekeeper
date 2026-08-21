@@ -38,6 +38,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -143,7 +144,8 @@ type Adder struct {
 	// template is currently being watched. It is designed to be atomic to avoid
 	// race conditions between the constraint controller and the constraint template
 	// controller
-	IfWatching func(schema.GroupVersionKind, func() error) (bool, error)
+	IfWatching       func(schema.GroupVersionKind, func() error) (bool, error)
+	RuntimeProjector runtimepolicy.Projector
 }
 
 func (a *Adder) InjectCFClient(c *constraintclient.Client) {
@@ -156,6 +158,10 @@ func (a *Adder) InjectWatchManager(w *watch.Manager) {
 
 func (a *Adder) InjectTracker(t *readiness.Tracker) {
 	a.Tracker = t
+}
+
+func (a *Adder) InjectRuntimeProjector(projector runtimepolicy.Projector) {
+	a.RuntimeProjector = projector
 }
 
 // Add creates a new Constraint Controller and adds it to the Manager. The Manager will set fields on the Controller
@@ -171,13 +177,14 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	}
 
 	r := newReconciler(mgr, a.CFClient, reporter, a.ConstraintsCache, a.Tracker)
+	r.runtimeProjector = a.RuntimeProjector
 	if a.GetPod != nil {
 		r.getPod = a.GetPod
 	}
 	if a.IfWatching != nil {
 		r.ifWatching = a.IfWatching
 	}
-	return add(mgr, r, a.Events)
+	return add(mgr, r, a.Events, a.RuntimeProjector)
 }
 
 type ConstraintsCache struct {
@@ -218,7 +225,7 @@ func newReconciler(
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.GenericEvent, runtimeProjector runtimepolicy.Projector) error {
 	// Create a new controller
 	c, err := controller.New("constraint-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -249,6 +256,11 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 		if err = c.Watch(source.Kind(mgr.GetCache(), obj, handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			return eventPackerMapFuncFromOwnerRefs()(ctx, obj)
 		}))); err != nil {
+			return err
+		}
+	}
+	if runtimeProjector != nil {
+		if err = c.Watch(source.Kind(mgr.GetCache(), runtimeProjector.RuntimePolicyWatchObject(), handler.TypedEnqueueRequestsFromMapFunc(eventPackerMapFuncFromOwnerRefs()))); err != nil {
 			return err
 		}
 	}
@@ -290,7 +302,8 @@ type ReconcileConstraint struct {
 	// that would otherwise trigger a watch. The bool returns whether
 	// the function was executed, which can be used to determine
 	// whether the reconciler should infer the object has been deleted
-	ifWatching func(schema.GroupVersionKind, func() error) (bool, error)
+	ifWatching       func(schema.GroupVersionKind, func() error) (bool, error)
+	runtimeProjector runtimepolicy.Projector
 }
 
 // +kubebuilder:rbac:groups=constraints.gatekeeper.sh,resources=*,verbs=get;list;watch;create;update;patch;delete
@@ -423,6 +436,18 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 			status:            metrics.ActiveStatus,
 		})
 		reportMetrics = true
+		if r.runtimeProjector != nil {
+			projection, handled, err := r.runtimeProjector.ReconcileConstraint(ctx, instance)
+			if err != nil {
+				updateEnforcementPointStatus(status, runtimepolicy.EnforcementPoint, runtimepolicy.ProjectionError, err.Error(), instance.GetGeneration())
+				return reconcile.Result{}, r.reportErrorOnConstraintStatus(ctx, status, err, "could not project runtime constraint")
+			}
+			if handled {
+				updateEnforcementPointStatus(status, runtimepolicy.EnforcementPoint, projection.State, projection.Message, instance.GetGeneration())
+				return reconcile.Result{}, nil
+			}
+			cleanEnforcementPointStatus(status, runtimepolicy.EnforcementPoint)
+		}
 		requeueAfter, err := r.manageVAPB(ctx, enforcementAction, instance, status)
 		if err != nil {
 			return reconcile.Result{RequeueAfter: requeueAfter}, err

@@ -33,6 +33,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/keys"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -156,7 +157,8 @@ type Adder struct {
 	CacheManager *cm.CacheManager
 	CtEvents     chan<- event.GenericEvent
 	// GetPod returns an instance of the currently running Gatekeeper pod
-	GetPod func(context.Context) (*corev1.Pod, error)
+	GetPod           func(context.Context) (*corev1.Pod, error)
+	RuntimeProjector runtimepolicy.Projector
 }
 
 // Add creates a new ConfigController and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
@@ -166,6 +168,7 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	if err != nil {
 		return err
 	}
+	r.runtimeProjector = a.RuntimeProjector
 
 	return add(mgr, r)
 }
@@ -184,6 +187,10 @@ func (a *Adder) InjectGetPod(getPod func(ctx context.Context) (*corev1.Pod, erro
 
 func (a *Adder) InjectConstraintTemplateEvent(ctEvents chan event.GenericEvent) {
 	a.CtEvents = ctEvents
+}
+
+func (a *Adder) InjectRuntimeProjector(projector runtimepolicy.Projector) {
+	a.RuntimeProjector = projector
 }
 
 // newReconciler returns a new reconcile.Reconciler.
@@ -244,8 +251,9 @@ type ReconcileConfig struct {
 
 	ctEvents chan<- event.GenericEvent
 
-	dirtyMu        sync.Mutex
-	dirtyTemplates map[string]*v1beta1.ConstraintTemplate
+	dirtyMu          sync.Mutex
+	dirtyTemplates   map[string]*v1beta1.ConstraintTemplate
+	runtimeProjector runtimepolicy.Projector
 }
 
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
@@ -306,8 +314,16 @@ func (r *ReconcileConfig) Reconcile(ctx context.Context, request reconcile.Reque
 	if operations.IsAssigned(operations.Generate) && *transform.SyncVAPScope && r.ctEvents != nil {
 		configChanged = r.cacheManager.ExcluderChangedForProcess(process.Webhook, newExcluder)
 	}
+	runtimeConfigChanged := r.cacheManager.ExcluderChangedForProcess(process.Runtime, newExcluder)
 
 	r.cacheManager.ExcludeProcesses(newExcluder)
+	if runtimeConfigChanged && r.runtimeProjector != nil {
+		if refresher, ok := r.runtimeProjector.(runtimepolicy.ConfigRefresher); ok {
+			if err := refresher.RefreshConfig(ctx); err != nil {
+				return reconcile.Result{Requeue: true}, fmt.Errorf("refresh runtime projections after Config change: %w", err)
+			}
+		}
+	}
 	var ctTriggerError error
 	if operations.IsAssigned(operations.Generate) && *transform.SyncVAPScope && r.ctEvents != nil {
 		if configChanged {

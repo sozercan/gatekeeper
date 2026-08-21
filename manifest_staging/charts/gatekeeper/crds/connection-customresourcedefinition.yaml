@@ -47,6 +47,27 @@ spec:
                 description: Driver is the name of one of the expected drivers i.e.
                   dapr, disk
                 type: string
+              sources:
+                description: |-
+                  Sources restricts which producers may use this Connection. An omitted
+                  list preserves the legacy audit/webhook behavior; external runtime
+                  producers must be explicitly enabled with "runtime".
+                items:
+                  description: |-
+                    ConnectionSource identifies a producer permitted to publish through a
+                    Connection.
+                  enum:
+                  - audit
+                  - webhook
+                  - runtime
+                  type: string
+                maxItems: 3
+                type: array
+                x-kubernetes-list-type: set
+                x-kubernetes-validations:
+                - message: runtime must be the only source in a Connection
+                  rule: '!self.exists(source, source == ''runtime'') || self.size()
+                    == 1'
             required:
             - config
             - driver
@@ -134,11 +155,12 @@ spec:
                             enum:
                             - audit
                             - webhook
+                            - runtime
                             type: string
                         required:
                         - source
                         type: object
-                      maxItems: 2
+                      maxItems: 3
                       type: array
                       x-kubernetes-list-map-keys:
                       - source

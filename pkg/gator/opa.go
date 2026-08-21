@@ -6,6 +6,7 @@ import (
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/drivers/k8scel"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 )
@@ -13,7 +14,11 @@ import (
 type Opt func() ([]constraintclient.Opt, []rego.Arg, error)
 
 func NewOPAClient(includeTrace bool, opts ...Opt) (Client, error) {
-	args := []constraintclient.Opt{constraintclient.Targets(&target.K8sValidationTarget{})}
+	runtimeDriver := runtimepolicy.NewOfflineDriver()
+	args := []constraintclient.Opt{
+		constraintclient.Targets(&target.K8sValidationTarget{}, &runtimepolicy.Target{}),
+		constraintclient.Driver(runtimeDriver),
+	}
 
 	driverArgs := []rego.Arg{
 		rego.Tracing(includeTrace),
@@ -41,7 +46,7 @@ func NewOPAClient(includeTrace bool, opts ...Opt) (Client, error) {
 		return nil, err
 	}
 
-	return c, nil
+	return withRuntimeTemplateValidation(c), nil
 }
 
 func WithK8sCEL() Opt {

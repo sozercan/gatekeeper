@@ -96,6 +96,17 @@ func TestGetExcludedNamespaces(t *testing.T) {
 			expectedNamespaces: []string{"kube-*", "default"},
 		},
 		{
+			name: "wildcard process affects runtime",
+			matchEntries: []configv1alpha1.MatchEntry{
+				{
+					ExcludedNamespaces: []wildcard.Wildcard{"kube-*", "default"},
+					Processes:          []string{"*"},
+				},
+			},
+			process:            Runtime,
+			expectedNamespaces: []string{"kube-*", "default"},
+		},
+		{
 			name: "multiple match entries for same process",
 			matchEntries: []configv1alpha1.MatchEntry{
 				{

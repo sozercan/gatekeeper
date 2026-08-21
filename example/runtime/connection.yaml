@@ -1,0 +1,14 @@
+apiVersion: connection.gatekeeper.sh/v1alpha1
+kind: Connection
+metadata:
+  name: runtime-connection
+  namespace: gatekeeper-system
+spec:
+  driver: disk
+  sources:
+  - runtime
+  config:
+    # Mount this parent path into the Gatekeeper controller-manager when using
+    # the disk driver. Dapr or another registered driver can be used instead.
+    path: /tmp/violations/topics
+    maxAuditResults: 3

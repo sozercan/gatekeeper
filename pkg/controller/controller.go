@@ -33,6 +33,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
 	corev1 "k8s.io/api/core/v1"
@@ -106,6 +107,14 @@ type WebhookConfigCacheInjector interface {
 	InjectWebhookConfigCache(webhookConfigCache *webhookconfigcache.WebhookConfigCache)
 }
 
+type RuntimeProjectorInjector interface {
+	InjectRuntimeProjector(runtimepolicy.Projector)
+}
+
+type RuntimeExportEnabledInjector interface {
+	InjectRuntimeExportEnabled(bool)
+}
+
 // Injectors is a list of adder structs that need injection. We can convert this
 // to an interface once we create controllers for things like data sync.
 var Injectors []Injector
@@ -115,19 +124,21 @@ var AddToManagerFuncs []func(manager.Manager) error
 
 // Dependencies are dependencies that can be injected into controllers.
 type Dependencies struct {
-	CFClient           *constraintclient.Client
-	WatchManger        *watch.Manager
-	Tracker            *readiness.Tracker
-	GetPod             func(context.Context) (*corev1.Pod, error)
-	ProcessExcluder    *process.Excluder
-	MutationSystem     *mutation.System
-	ExpansionSystem    *expansion.System
-	ProviderCache      *externaldata.ProviderCache
-	ExportSystem       *export.System
-	SyncEventsCh       chan event.GenericEvent
-	CacheMgr           *cm.CacheManager
-	CtEvents           chan event.GenericEvent
-	WebhookConfigCache *webhookconfigcache.WebhookConfigCache
+	CFClient             *constraintclient.Client
+	WatchManger          *watch.Manager
+	Tracker              *readiness.Tracker
+	GetPod               func(context.Context) (*corev1.Pod, error)
+	ProcessExcluder      *process.Excluder
+	MutationSystem       *mutation.System
+	ExpansionSystem      *expansion.System
+	ProviderCache        *externaldata.ProviderCache
+	ExportSystem         *export.System
+	SyncEventsCh         chan event.GenericEvent
+	CacheMgr             *cm.CacheManager
+	CtEvents             chan event.GenericEvent
+	WebhookConfigCache   *webhookconfigcache.WebhookConfigCache
+	RuntimeProjector     runtimepolicy.Projector
+	RuntimeExportEnabled bool
 }
 
 type defaultPodGetter struct {
@@ -278,6 +289,12 @@ func AddToManager(m manager.Manager, deps *Dependencies) error {
 		}
 		if a2, ok := a.(WebhookConfigCacheInjector); ok {
 			a2.InjectWebhookConfigCache(deps.WebhookConfigCache)
+		}
+		if a2, ok := a.(RuntimeProjectorInjector); ok {
+			a2.InjectRuntimeProjector(deps.RuntimeProjector)
+		}
+		if a2, ok := a.(RuntimeExportEnabledInjector); ok {
+			a2.InjectRuntimeExportEnabled(deps.RuntimeExportEnabled)
 		}
 
 		if err := a.Add(m); err != nil {

@@ -1,0 +1,27 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RuntimeProcess
+metadata:
+  name: production-shells
+spec:
+  # deny projects mode: Enforce; dryrun projects mode: Monitor.
+  enforcementAction: deny
+  match:
+    namespaceSelector:
+      matchLabels:
+        environment: production
+    podSelector:
+      matchLabels:
+        runtime-policy: restricted-shells
+    containerTypes:
+    - Application
+    - Init
+  parameters:
+    failurePolicy: FailOpen
+    behaviors:
+      process:
+        defaultAction: Deny
+        executables:
+        - path: /bin/sh
+          action: Allow
+        - path: /usr/bin/bash
+          action: Allow

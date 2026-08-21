@@ -9,6 +9,8 @@ import (
 const (
 	defaultConnection = "audit-connection"
 	defaultChannel    = "audit-channel"
+	// RuntimeExportSubject is the Connection subject reserved for runtime findings.
+	RuntimeExportSubject = "runtime"
 )
 
 const (

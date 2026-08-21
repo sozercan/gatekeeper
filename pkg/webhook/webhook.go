@@ -28,12 +28,13 @@ import (
 )
 
 type Dependencies struct {
-	OpaClient       *constraintclient.Client
-	ProcessExcluder *process.Excluder
-	MutationSystem  *mutation.System
-	ExpansionSystem *expansion.System
-	ExportSystem    export.Exporter
-	GetPod          func(context.Context) (*corev1.Pod, error)
+	OpaClient            *constraintclient.Client
+	ProcessExcluder      *process.Excluder
+	MutationSystem       *mutation.System
+	ExpansionSystem      *expansion.System
+	ExportSystem         export.Exporter
+	GetPod               func(context.Context) (*corev1.Pod, error)
+	RuntimeExportEnabled bool
 }
 
 // AddToManagerFuncs is a list of functions to add all Controllers to the Manager.

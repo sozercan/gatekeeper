@@ -23,6 +23,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/drivers/k8scel/transform"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -856,6 +857,21 @@ type fakeReporter struct {
 	vapbStatuses map[types.NamespacedName]metrics.VAPStatus
 }
 
+type fakeRuntimeProjector struct {
+	calls  int
+	status runtimepolicy.ProjectionStatus
+	err    error
+}
+
+func (f *fakeRuntimeProjector) ReconcileConstraint(_ context.Context, _ *unstructured.Unstructured) (runtimepolicy.ProjectionStatus, bool, error) {
+	f.calls++
+	return f.status, true, f.err
+}
+
+func (*fakeRuntimeProjector) RuntimePolicyWatchObject() client.Object {
+	return runtimepolicy.RuntimePolicyWatchObject()
+}
+
 func (f *fakeReporter) reportConstraints(_ context.Context, _ tags, _ int64) error { return nil }
 
 func (f *fakeReporter) ReportVAPBStatus(name types.NamespacedName, status metrics.VAPStatus) {
@@ -964,6 +980,45 @@ func makeUnitConstraint() *unstructured.Unstructured {
 	instance.SetUID("constraint-uid")
 	instance.SetGeneration(1)
 	return instance
+}
+
+func TestReconcileRetriesRuntimeProjectionAfterConstraintIsCached(t *testing.T) {
+	ct := makeUnitCELTemplate()
+	instance := makeUnitConstraint()
+	r, reader, _, request := newConstraintUnitReconciler(t, ct, instance)
+	projector := &fakeRuntimeProjector{err: errors.New("runtime API unavailable")}
+	r.runtimeProjector = projector
+
+	if _, err := r.Reconcile(context.Background(), request); err == nil || !strings.Contains(err.Error(), "runtime API unavailable") {
+		t.Fatalf("first Reconcile() error = %v, want projection failure", err)
+	}
+	projector.err = nil
+	projector.status = runtimepolicy.ProjectionStatus{State: runtimepolicy.ProjectionActive, Message: "active on selected nodes"}
+	if result, err := r.Reconcile(context.Background(), request); err != nil || result != (reconcile.Result{}) {
+		t.Fatalf("second Reconcile() = result %v, err %v", result, err)
+	}
+	if projector.calls != 2 {
+		t.Fatalf("projection calls = %d, want 2", projector.calls)
+	}
+
+	statusName, err := constraintstatusv1beta1.KeyForConstraint("test-pod", instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := reader.objects[types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}].(*constraintstatusv1beta1.ConstraintPodStatus)
+	if !ok {
+		t.Fatalf("stored status type = %T", reader.objects[types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}])
+	}
+	var runtimeStatus *constraintstatusv1beta1.EnforcementPointStatus
+	for i := range status.Status.EnforcementPointsStatus {
+		if status.Status.EnforcementPointsStatus[i].EnforcementPoint == runtimepolicy.EnforcementPoint {
+			runtimeStatus = &status.Status.EnforcementPointsStatus[i]
+			break
+		}
+	}
+	if runtimeStatus == nil || runtimeStatus.State != runtimepolicy.ProjectionActive || runtimeStatus.Message != "active on selected nodes" {
+		t.Fatalf("runtime enforcement point status = %#v", runtimeStatus)
+	}
 }
 
 type vapTestConfig struct {

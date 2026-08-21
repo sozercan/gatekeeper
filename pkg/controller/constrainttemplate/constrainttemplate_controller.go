@@ -39,6 +39,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/runtimepolicy"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/webhook"
@@ -89,6 +90,7 @@ type Adder struct {
 	GetPod             func(context.Context) (*corev1.Pod, error)
 	WebhookConfigCache *webhookconfigcache.WebhookConfigCache
 	CtEvents           <-chan event.GenericEvent
+	RuntimeProjector   runtimepolicy.Projector
 }
 
 // Add creates a new ConstraintTemplate Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
@@ -99,7 +101,7 @@ func (a *Adder) Add(mgr manager.Manager) error {
 	}
 	// constraintEvents will be used to receive events from dynamic watches registered for constraint controller
 	constraintEvents := make(chan event.GenericEvent, 1024)
-	r, err := newReconciler(mgr, a.CFClient, a.WatchManager, a.Tracker, constraintEvents, constraintEvents, a.GetPod, a.WebhookConfigCache, a.ProcessExcluder)
+	r, err := newReconciler(mgr, a.CFClient, a.WatchManager, a.Tracker, constraintEvents, constraintEvents, a.GetPod, a.WebhookConfigCache, a.ProcessExcluder, a.RuntimeProjector)
 	if err != nil {
 		return err
 	}
@@ -134,11 +136,15 @@ func (a *Adder) InjectConstraintTemplateEvent(ctEvents chan event.GenericEvent) 
 	a.CtEvents = ctEvents
 }
 
+func (a *Adder) InjectRuntimeProjector(projector runtimepolicy.Projector) {
+	a.RuntimeProjector = projector
+}
+
 // newReconciler returns a new reconcile.Reconciler
 // cstrEvents is the channel from which constraint controller will receive the events
 // regEvents is the channel registered by Registrar to put the events in
 // cstrEvents and regEvents point to same event channel except for testing.
-func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *watch.Manager, tracker *readiness.Tracker, cstrEvents chan event.GenericEvent, regEvents chan<- event.GenericEvent, getPod func(context.Context) (*corev1.Pod, error), webhookCache *webhookconfigcache.WebhookConfigCache, processExcluder *process.Excluder) (*ReconcileConstraintTemplate, error) {
+func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *watch.Manager, tracker *readiness.Tracker, cstrEvents chan event.GenericEvent, regEvents chan<- event.GenericEvent, getPod func(context.Context) (*corev1.Pod, error), webhookCache *webhookconfigcache.WebhookConfigCache, processExcluder *process.Excluder, runtimeProjector runtimepolicy.Projector) (*ReconcileConstraintTemplate, error) {
 	// constraintsCache contains total number of constraints and shared mutex and vap label
 	constraintsCache := constraint.NewConstraintsCache()
 
@@ -161,6 +167,7 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 		Tracker:          tracker,
 		GetPod:           getPod,
 		IfWatching:       w.IfWatching,
+		RuntimeProjector: runtimeProjector,
 	}
 	// Create subordinate controller - we will feed it events dynamically via watch
 	if err := constraintAdder.Add(mgr); err != nil {
@@ -427,6 +434,16 @@ func (r *ReconcileConstraintTemplate) Reconcile(ctx context.Context, request rec
 	status.Status.TemplateUID = ct.GetUID()
 	status.Status.ObservedGeneration = ct.GetGeneration()
 	status.Status.Errors = nil
+	if _, err := runtimepolicy.ValidateTemplate(unversionedCT); err != nil {
+		logger.Error(err, "runtime template validation error")
+		r.tracker.TryCancelTemplate(unversionedCT)
+		r.metrics.registry.add(request.NamespacedName, metrics.ErrorStatus)
+		status.Status.Errors = append(status.Status.Errors, &v1beta1.CreateCRDError{Code: ErrCreateCode, Message: err.Error()})
+		persistStatus = true
+		persistErrorMessage = "update status error"
+		logError(request.Name)
+		return reconcile.Result{}, nil
+	}
 
 	unversionedProposedCRD, err := r.cfClient.CreateCRD(ctx, unversionedCT)
 	if err != nil {

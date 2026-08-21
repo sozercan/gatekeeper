@@ -426,7 +426,7 @@ func setupVersionPinnedReconcileTest(t *testing.T, groupVersion *schema.GroupVer
 		MatchPolicy: &exactMatch,
 	})
 
-	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, constraintEvents, func(context.Context) (*corev1.Pod, error) { return pod, nil }, webhookCache, processExcluder)
+	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, constraintEvents, func(context.Context) (*corev1.Pod, error) { return pod, nil }, webhookCache, processExcluder, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestReconcile(t *testing.T) {
 	sharedWebhookCache := webhookCache
 	setVAPTestGlobals(t, &admissionregistrationv1beta1.SchemeGroupVersion)
 
-	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, constraintEvents, func(context.Context) (*corev1.Pod, error) { return pod, nil }, webhookCache, processExcluder)
+	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, constraintEvents, func(context.Context) (*corev1.Pod, error) { return pod, nil }, webhookCache, processExcluder, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2614,7 +2614,7 @@ violation[{"msg": "denied!"}] {
 	constraintTemplateEvents := make(chan event.GenericEvent, 1024)
 	processExcluder := process.Get()
 	processExcluder.Add(getMatchEntryConfig())
-	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, nil, func(context.Context) (*corev1.Pod, error) { return pod, nil }, nil, processExcluder)
+	rec, err := newReconciler(mgr, cfClient, wm, tracker, constraintEvents, nil, func(context.Context) (*corev1.Pod, error) { return pod, nil }, nil, processExcluder, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
