@@ -16,7 +16,7 @@ type Opt func() ([]constraintclient.Opt, []rego.Arg, error)
 func NewOPAClient(includeTrace bool, opts ...Opt) (Client, error) {
 	runtimeDriver := runtimepolicy.NewOfflineDriver()
 	args := []constraintclient.Opt{
-		constraintclient.Targets(&target.K8sValidationTarget{}, &runtimepolicy.Target{}),
+		constraintclient.Targets(&target.K8sValidationTarget{}, runtimepolicy.NewTarget(runtimeDriver)),
 		constraintclient.Driver(runtimeDriver),
 	}
 

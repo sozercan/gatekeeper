@@ -136,7 +136,7 @@ func (handler *runtimeExportHandler) ServeHTTP(writer http.ResponseWriter, reque
 		http.Error(writer, "connection lookup unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if len(connection.Spec.Sources) != 1 || !connection.Spec.AllowsSource(connectionv1alpha1.RuntimeSource) {
+	if !connection.AllowsRuntimeSource() {
 		http.Error(writer, "connection does not allow runtime exports", http.StatusForbidden)
 		return
 	}

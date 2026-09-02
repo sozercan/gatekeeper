@@ -16,6 +16,7 @@ import (
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	regodriver "github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
 	regoSchema "github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego/schema"
+	constraintreviews "github.com/open-policy-agent/frameworks/constraint/pkg/client/reviews"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	constraintstatusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/drivers/k8scel"
@@ -29,6 +30,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -37,9 +39,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+const projectedRuntimePolicyMessage = "projected runtime policy"
 
 func makeTemplateWithRegoAndCELEngine(vapGenerationVal *bool) *templates.ConstraintTemplate {
 	source := &celSchema.Source{
@@ -919,10 +924,12 @@ func newConstraintUnitReconciler(t *testing.T, ct *templates.ConstraintTemplate,
 	if err != nil {
 		t.Fatal(err)
 	}
+	runtimeDriver := runtimepolicy.NewOfflineDriver()
 	cfClient, err := constraintclient.NewClient(
-		constraintclient.Targets(&target.K8sValidationTarget{}),
+		constraintclient.Targets(&target.K8sValidationTarget{}, runtimepolicy.NewTarget(runtimeDriver)),
 		constraintclient.Driver(regoDriver),
 		constraintclient.Driver(celDriver),
+		constraintclient.Driver(runtimeDriver),
 		constraintclient.EnforcementPoints(util.AuditEnforcementPoint),
 	)
 	if err != nil {
@@ -983,6 +990,7 @@ func makeUnitConstraint() *unstructured.Unstructured {
 }
 
 func TestReconcileRetriesRuntimeProjectionAfterConstraintIsCached(t *testing.T) {
+	configureVAP(t, vapTestConfig{defaultGenerateVAPB: ptr.To(false)})
 	ct := makeUnitCELTemplate()
 	instance := makeUnitConstraint()
 	r, reader, _, request := newConstraintUnitReconciler(t, ct, instance)
@@ -993,7 +1001,7 @@ func TestReconcileRetriesRuntimeProjectionAfterConstraintIsCached(t *testing.T) 
 		t.Fatalf("first Reconcile() error = %v, want projection failure", err)
 	}
 	projector.err = nil
-	projector.status = runtimepolicy.ProjectionStatus{State: runtimepolicy.ProjectionActive, Message: "active on selected nodes"}
+	projector.status = runtimepolicy.ProjectionStatus{State: runtimepolicy.ProjectionProjected, Message: projectedRuntimePolicyMessage}
 	if result, err := r.Reconcile(context.Background(), request); err != nil || result != (reconcile.Result{}) {
 		t.Fatalf("second Reconcile() = result %v, err %v", result, err)
 	}
@@ -1016,8 +1024,181 @@ func TestReconcileRetriesRuntimeProjectionAfterConstraintIsCached(t *testing.T) 
 			break
 		}
 	}
-	if runtimeStatus == nil || runtimeStatus.State != runtimepolicy.ProjectionActive || runtimeStatus.Message != "active on selected nodes" {
+	if runtimeStatus == nil || runtimeStatus.State != runtimepolicy.ProjectionProjected || runtimeStatus.Message != projectedRuntimePolicyMessage {
 		t.Fatalf("runtime enforcement point status = %#v", runtimeStatus)
+	}
+}
+
+func TestReconcileCombinedTemplateCachesReviewsProjectsRuntimeAndGeneratesVAPB(t *testing.T) {
+	configureVAP(t, vapTestConfig{
+		apiEnabled:          ptr.To(true),
+		defaultGenerateVAP:  ptr.To(true),
+		defaultGenerateVAPB: ptr.To(true),
+	})
+
+	for _, test := range []struct {
+		name    string
+		reverse bool
+	}{
+		{name: "admission then runtime"},
+		{name: "runtime then admission", reverse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			ct := makeTemplateWithRegoAndCELEngine(ptr.To(true))
+			ct.Spec.CRD.Spec.Names.Kind = "TestKind"
+			ct.Spec.Targets[0].Target = target.Name
+			ct.Spec.CRD.Spec.Validation = &templates.Validation{OpenAPIV3Schema: &apiextensions.JSONSchemaProps{
+				Type: "object",
+				Properties: map[string]apiextensions.JSONSchemaProps{
+					"behaviors": {Type: "object", XPreserveUnknownFields: ptr.To(true)},
+				},
+			}}
+			ct.Spec.Targets = append(ct.Spec.Targets, templates.Target{
+				Target: runtimepolicy.TargetName,
+				Code: []templates.Code{{
+					Engine: runtimepolicy.EngineName,
+					Source: &templates.Anything{Value: map[string]interface{}{"version": runtimepolicy.SourceVersion}},
+				}},
+			})
+			if test.reverse {
+				ct.Spec.Targets[0], ct.Spec.Targets[1] = ct.Spec.Targets[1], ct.Spec.Targets[0]
+			}
+			ct.SetAnnotations(map[string]string{VAPBGenerationAnnotation: VAPBGenerationUnblocked})
+			instance := makeUnitConstraint()
+			if err := unstructured.SetNestedMap(instance.Object, map[string]interface{}{
+				"behaviors": map[string]interface{}{"process": map[string]interface{}{}},
+			}, "spec", "parameters"); err != nil {
+				t.Fatal(err)
+			}
+			r, reader, _, request := newConstraintUnitReconciler(t, ct, instance)
+
+			runtimeClient := clientfake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
+			runtimeDriver := runtimepolicy.NewDriver(runtimeClient, runtimeClient)
+			regoDriver, err := regodriver.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			celDriver, err := k8scel.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfClient, err := constraintclient.NewClient(
+				constraintclient.Targets(&target.K8sValidationTarget{}, runtimepolicy.NewTarget(runtimeDriver)),
+				constraintclient.Driver(regoDriver),
+				constraintclient.Driver(celDriver),
+				constraintclient.Driver(runtimeDriver),
+				constraintclient.EnforcementPoints(util.WebhookEnforcementPoint, util.AuditEnforcementPoint),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cfClient.AddTemplate(ctx, ct); err != nil {
+				t.Fatalf("AddTemplate() error = %v", err)
+			}
+			if _, err := cfClient.GetConstraint(instance); err == nil {
+				t.Fatal("constraint was cached before reconciliation")
+			}
+			if vap, err := transform.TemplateToPolicyDefinition(ct); err != nil || vap == nil {
+				t.Fatalf("TemplateToPolicyDefinition() = %#v, err %v", vap, err)
+			}
+			r.cfClient = cfClient
+			r.runtimeProjector = runtimeDriver
+
+			result, err := r.Reconcile(ctx, request)
+			if err != nil || result != (reconcile.Result{}) {
+				t.Fatalf("Reconcile() = result %v, err %v", result, err)
+			}
+			if _, err := cfClient.GetConstraint(instance); err != nil {
+				t.Fatalf("GetConstraint() after reconciliation error = %v", err)
+			}
+
+			review := &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata": map[string]interface{}{
+					"name":      "workload",
+					"namespace": "production",
+				},
+			}}
+			review.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
+			for _, enforcementPoint := range []string{util.WebhookEnforcementPoint, util.AuditEnforcementPoint} {
+				response, err := cfClient.Review(ctx, review, constraintreviews.EnforcementPoint(enforcementPoint))
+				if err != nil {
+					t.Fatalf("Review(%s) error = %v", enforcementPoint, err)
+				}
+				results := response.Results()
+				if len(results) != 1 || results[0].Target != target.Name || results[0].Msg != "denied!" {
+					t.Fatalf("Review(%s) results = %#v", enforcementPoint, results)
+				}
+			}
+
+			policy := runtimepolicy.RuntimePolicyWatchObject()
+			if err := runtimeClient.Get(ctx, types.NamespacedName{Name: runtimepolicy.RuntimePolicyName(instance)}, policy); err != nil {
+				t.Fatalf("get projected RuntimePolicy: %v", err)
+			}
+			if policy.GetAPIVersion() != runtimepolicy.RuntimePolicyAPIVersion {
+				t.Fatalf("RuntimePolicy apiVersion = %q, want %q", policy.GetAPIVersion(), runtimepolicy.RuntimePolicyAPIVersion)
+			}
+
+			binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+			bindingName := transform.GetVAPBindingName(instance.GetKind(), instance.GetName())
+			if err := reader.Get(ctx, types.NamespacedName{Name: bindingName}, binding); err != nil {
+				t.Fatalf("get ValidatingAdmissionPolicyBinding: %v", err)
+			}
+
+			statusName, err := constraintstatusv1beta1.KeyForConstraint("test-pod", instance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, ok := reader.objects[types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}].(*constraintstatusv1beta1.ConstraintPodStatus)
+			if !ok {
+				t.Fatalf("stored status type = %T", reader.objects[types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}])
+			}
+			if !status.Status.Enforced {
+				t.Fatal("Enforced = false, want true after constraint cache acceptance")
+			}
+			states := make(map[string]string, len(status.Status.EnforcementPointsStatus))
+			for _, enforcementPoint := range status.Status.EnforcementPointsStatus {
+				states[enforcementPoint.EnforcementPoint] = enforcementPoint.State
+			}
+			if states[runtimepolicy.EnforcementPoint] != runtimepolicy.ProjectionProjected {
+				t.Fatalf("runtime enforcement point state = %q, want %q", states[runtimepolicy.EnforcementPoint], runtimepolicy.ProjectionProjected)
+			}
+			if states[util.VAPEnforcementPoint] != GeneratedVAPBState {
+				t.Fatalf("VAP enforcement point state = %q, want %q", states[util.VAPEnforcementPoint], GeneratedVAPBState)
+			}
+		})
+	}
+}
+
+func TestReconcileReportsRuntimeAndVAPBFailures(t *testing.T) {
+	configureVAP(t, vapTestConfig{
+		apiEnabled:          ptr.To(true),
+		defaultGenerateVAP:  ptr.To(true),
+		defaultGenerateVAPB: ptr.To(true),
+	})
+
+	ct := makeUnitCELTemplate()
+	instance := makeUnitConstraint()
+	r, reader, _, request := newConstraintUnitReconciler(t, ct, instance)
+	r.runtimeProjector = &fakeRuntimeProjector{err: errors.New("runtime API unavailable")}
+
+	_, err := r.Reconcile(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "runtime API unavailable") || !strings.Contains(err.Error(), "annotation to wait for ValidatingAdmissionPolicyBinding generation not found") {
+		t.Fatalf("Reconcile() error = %v, want runtime and VAPB failures", err)
+	}
+
+	statusName, err := constraintstatusv1beta1.KeyForConstraint("test-pod", instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := reader.objects[types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}].(*constraintstatusv1beta1.ConstraintPodStatus)
+	if !ok {
+		t.Fatalf("stored status type = %T", reader.objects[types.NamespacedName{Name: statusName, Namespace: util.GetNamespace()}])
+	}
+	if len(status.Status.Errors) != 2 {
+		t.Fatalf("status errors = %v, want runtime and VAPB failures", status.Status.Errors)
 	}
 }
 
@@ -1421,6 +1602,81 @@ func TestManageVAPB_RegoOnlyTemplateSkipsVAPAPIDisabledError(t *testing.T) {
 	}
 	if len(writer.updatedObjects) != 2 {
 		t.Fatalf("expected stable CEL-eligible status to skip another update, got %d total updates", len(writer.updatedObjects))
+	}
+}
+
+func TestManageVAPB_RuntimeOnlyTemplateDoesNotReportVAPError(t *testing.T) {
+	configureVAP(t, vapTestConfig{
+		apiEnabled:          ptr.To(true),
+		defaultGenerateVAP:  ptr.To(true),
+		defaultGenerateVAPB: ptr.To(true),
+	})
+
+	scheme := runtime.NewScheme()
+	if err := templatesv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	unversionedCT := &templates.ConstraintTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "testkind"},
+		Spec: templates.ConstraintTemplateSpec{Targets: []templates.Target{{
+			Target: runtimepolicy.TargetName,
+			Code: []templates.Code{{
+				Engine: runtimepolicy.EngineName,
+				Source: &templates.Anything{Value: map[string]interface{}{"version": runtimepolicy.SourceVersion}},
+			}},
+		}}},
+	}
+	ct := &templatesv1beta1.ConstraintTemplate{}
+	if err := scheme.Convert(unversionedCT, ct, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	instance := makeUnitConstraint()
+	instance.SetGeneration(1)
+	vapBindingKey := types.NamespacedName{Name: transform.GetVAPBindingName(instance.GetKind(), instance.GetName())}
+	reporter := &fakeReporter{vapbStatuses: map[types.NamespacedName]metrics.VAPStatus{
+		vapBindingKey: metrics.VAPStatusError,
+	}}
+	status := &constraintstatusv1beta1.ConstraintPodStatus{
+		Status: constraintstatusv1beta1.ConstraintPodStatusStatus{
+			EnforcementPointsStatus: []constraintstatusv1beta1.EnforcementPointStatus{{
+				EnforcementPoint:   util.VAPEnforcementPoint,
+				State:              ErrGenerateVAPBState,
+				ObservedGeneration: 1,
+			}},
+		},
+	}
+	writer := &trackingWriter{}
+	r := &ReconcileConstraint{
+		reader: &fakeReader{objects: map[types.NamespacedName]client.Object{
+			{Name: "testkind"}: ct,
+		}},
+		writer:   writer,
+		log:      logf.Log.WithName("test"),
+		reporter: reporter,
+		scheme:   scheme,
+	}
+
+	requeueAfter, err := r.manageVAPB(context.Background(), util.Dryrun, instance, status)
+	if err != nil {
+		t.Fatalf("manageVAPB() error = %v", err)
+	}
+	if requeueAfter != 0 {
+		t.Fatalf("manageVAPB() requeue delay = %s, want 0", requeueAfter)
+	}
+	if len(status.Status.Errors) != 0 {
+		t.Fatalf("runtime-only template reported VAP errors: %v", status.Status.Errors)
+	}
+	for _, enforcementPoint := range status.Status.EnforcementPointsStatus {
+		if enforcementPoint.EnforcementPoint == util.VAPEnforcementPoint {
+			t.Fatalf("runtime-only template retained VAP status: %#v", enforcementPoint)
+		}
+	}
+	if _, found := reporter.vapbStatuses[vapBindingKey]; found {
+		t.Fatalf("runtime-only template retained VAP metric for %v", vapBindingKey)
+	}
+	if len(writer.createdObjects) != 0 {
+		t.Fatalf("runtime-only template created VAP resources: %#v", writer.createdObjects)
 	}
 }
 

@@ -94,6 +94,20 @@ func TestRuntimeTargetCreatesConstraintCRD(t *testing.T) {
 }
 
 func TestCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reverse bool
+	}{
+		{name: "admission then runtime"},
+		{name: "runtime then admission", reverse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t, test.reverse)
+		})
+	}
+}
+
+func testCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t *testing.T, reverse bool) {
 	ctx := context.Background()
 	kube := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
 	runtimeDriver := NewDriver(kube, kube)
@@ -111,6 +125,9 @@ func TestCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t *testing
 		t.Fatal(err)
 	}
 	template := combinedRuntimeTemplate()
+	if reverse {
+		template.Spec.Targets[0], template.Spec.Targets[1] = template.Spec.Targets[1], template.Spec.Targets[0]
+	}
 	if _, err := client.AddTemplate(ctx, template); err != nil {
 		t.Fatalf("AddTemplate(combined) error = %v", err)
 	}
@@ -154,7 +171,7 @@ func TestCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t *testing
 	}
 
 	projection, handled, err := runtimeDriver.ReconcileConstraint(ctx, constraint)
-	if err != nil || !handled || projection.State != ProjectionPending {
+	if err != nil || !handled || projection.State != ProjectionProjected {
 		t.Fatalf("ReconcileConstraint() = %#v, handled %v, err %v", projection, handled, err)
 	}
 	policy := RuntimePolicyWatchObject()
@@ -331,7 +348,7 @@ func TestDriverProjectsUpdatesReportsAndDeletesRuntimePolicy(t *testing.T) {
 	}
 
 	projection, handled, err := driver.ReconcileConstraint(ctx, constraint)
-	if err != nil || !handled || projection.State != ProjectionPending {
+	if err != nil || !handled || projection.State != ProjectionProjected {
 		t.Fatalf("ReconcileConstraint(create) = %#v, handled %v, err %v", projection, handled, err)
 	}
 	policy := RuntimePolicyWatchObject()
@@ -356,7 +373,7 @@ func TestDriverProjectsUpdatesReportsAndDeletesRuntimePolicy(t *testing.T) {
 		t.Fatalf("update status fixture: %v", err)
 	}
 	projection, handled, err = driver.ReconcileConstraint(ctx, constraint)
-	if err != nil || !handled || projection.State != ProjectionActive {
+	if err != nil || !handled || projection.State != ProjectionProjected {
 		t.Fatalf("ReconcileConstraint(active) = %#v, handled %v, err %v", projection, handled, err)
 	}
 
@@ -380,7 +397,7 @@ func TestDriverProjectsUpdatesReportsAndDeletesRuntimePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	projection, _, err = driver.ReconcileConstraint(ctx, constraint)
-	if err != nil || projection.State != ProjectionPending {
+	if err != nil || projection.State != ProjectionProjected {
 		t.Fatalf("ReconcileConstraint(update) = %#v, err %v", projection, err)
 	}
 	if err := kube.Get(ctx, types.NamespacedName{Name: RuntimePolicyName(constraint)}, policy); err != nil {
@@ -482,21 +499,17 @@ func TestRuntimePolicyNameIsStableAndBounded(t *testing.T) {
 	}
 }
 
-func TestRuntimePolicyStatusIgnoresStaleRejectedGeneration(t *testing.T) {
+func TestProjectionStatusDoesNotMirrorRuntimeActivation(t *testing.T) {
 	policy := RuntimePolicyWatchObject()
 	policy.SetName("runtime-process")
 	policy.SetGeneration(2)
-	_ = unstructured.SetNestedField(policy.Object, int64(1), "status", "observedGeneration")
+	_ = unstructured.SetNestedField(policy.Object, int64(2), "status", "observedGeneration")
 	_ = unstructured.SetNestedSlice(policy.Object, []interface{}{
-		map[string]interface{}{"type": "Accepted", "status": "False", "reason": "InvalidPath", "message": "old generation failed"},
+		map[string]interface{}{"type": "Active", "status": "True", "message": "active on all selected nodes"},
 	}, "status", "conditions")
 
-	if got := runtimePolicyStatus(policy); got.State != ProjectionPending {
-		t.Fatalf("runtimePolicyStatus(stale) = %#v, want Pending", got)
-	}
-	_ = unstructured.SetNestedField(policy.Object, int64(2), "status", "observedGeneration")
-	if got := runtimePolicyStatus(policy); got.State != ProjectionError || !strings.Contains(got.Message, "old generation failed") {
-		t.Fatalf("runtimePolicyStatus(current) = %#v, want current-generation Error", got)
+	if got := projectedStatus(policy); got.State != ProjectionProjected || strings.Contains(strings.ToLower(got.Message), "active on all") {
+		t.Fatalf("projectedStatus() = %#v, want Gatekeeper-only projection state", got)
 	}
 }
 
@@ -518,7 +531,7 @@ func TestDriverTreatsConcurrentRuntimePolicyCreateAsIdempotent(t *testing.T) {
 	}
 
 	projection, handled, err := driver.ReconcileConstraint(ctx, constraint)
-	if err != nil || !handled || projection.State != ProjectionPending {
+	if err != nil || !handled || projection.State != ProjectionProjected {
 		t.Fatalf("ReconcileConstraint(concurrent create) = %#v, handled %v, err %v", projection, handled, err)
 	}
 }

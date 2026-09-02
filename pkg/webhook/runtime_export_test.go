@@ -82,7 +82,7 @@ func TestRuntimeExportHandlerPublishesAuthorizedBatch(t *testing.T) {
 	t.Parallel()
 	exporter := &recordingRuntimeExporter{}
 	var reviewed authorizationv1.SubjectAccessReviewSpec
-	handler := newRuntimeExportTestHandler(t, exporter, []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, true, true, &reviewed)
+	handler := newRuntimeExportTestHandler(t, exporter, []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, nil, true, true, &reviewed)
 
 	request := httptest.NewRequest(http.MethodPost, runtimeExportPathPrefix+"runtime-connection", strings.NewReader(validRuntimeExportBody))
 	request.Header.Set("Authorization", "Bearer test-token")
@@ -122,7 +122,7 @@ func TestRuntimeExportHandlerEnforcesAuthenticationAuthorizationAndSource(t *tes
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			exporter := &recordingRuntimeExporter{}
-			handler := newRuntimeExportTestHandler(t, exporter, test.sources, test.authenticated, test.allowed, nil)
+			handler := newRuntimeExportTestHandler(t, exporter, test.sources, nil, test.authenticated, test.allowed, nil)
 			request := httptest.NewRequest(http.MethodPost, runtimeExportPathPrefix+"runtime-connection", strings.NewReader(validRuntimeExportBody))
 			request.Header.Set("Content-Type", "application/json")
 			if test.authorization != "" {
@@ -142,10 +142,27 @@ func TestRuntimeExportHandlerEnforcesAuthenticationAuthorizationAndSource(t *tes
 	}
 }
 
+func TestRuntimeExportHandlerAcceptsManagedCRDAnnotationFallback(t *testing.T) {
+	t.Parallel()
+	exporter := &recordingRuntimeExporter{}
+	handler := newRuntimeExportTestHandler(t, exporter, nil, map[string]string{
+		connectionv1alpha1.RuntimeSourceAnnotation: string(connectionv1alpha1.RuntimeSource),
+	}, true, true, nil)
+
+	request := httptest.NewRequest(http.MethodPost, runtimeExportPathPrefix+"runtime-connection", strings.NewReader(validRuntimeExportBody))
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestRuntimeExportHandlerRejectsInvalidBatchAndReportsBackendFailure(t *testing.T) {
 	t.Parallel()
 	exporter := &recordingRuntimeExporter{}
-	handler := newRuntimeExportTestHandler(t, exporter, []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, true, true, nil)
+	handler := newRuntimeExportTestHandler(t, exporter, []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, nil, true, true, nil)
 
 	request := httptest.NewRequest(http.MethodPost, runtimeExportPathPrefix+"runtime-connection", strings.NewReader(`{"apiVersion":"wrong","kind":"RuntimeFindingBatch","subject":"runtime","findings":[]}`))
 	request.Header.Set("Authorization", "Bearer test-token")
@@ -167,14 +184,14 @@ func TestRuntimeExportHandlerRejectsInvalidBatchAndReportsBackendFailure(t *test
 	}
 }
 
-func newRuntimeExportTestHandler(t *testing.T, exporter *recordingRuntimeExporter, sources []connectionv1alpha1.ConnectionSource, authenticated, allowed bool, reviewed *authorizationv1.SubjectAccessReviewSpec) *runtimeExportHandler {
+func newRuntimeExportTestHandler(t *testing.T, exporter *recordingRuntimeExporter, sources []connectionv1alpha1.ConnectionSource, annotations map[string]string, authenticated, allowed bool, reviewed *authorizationv1.SubjectAccessReviewSpec) *runtimeExportHandler {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := connectionv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	connection := &connectionv1alpha1.Connection{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "gatekeeper-system", Name: "runtime-connection"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "gatekeeper-system", Name: "runtime-connection", Annotations: annotations},
 		Spec:       connectionv1alpha1.ConnectionSpec{Sources: append([]connectionv1alpha1.ConnectionSource(nil), sources...)},
 	}
 	reader := clientfake.NewClientBuilder().WithScheme(scheme).WithObjects(connection).Build()

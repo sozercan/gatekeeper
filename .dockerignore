@@ -5,3 +5,5 @@
 **/Thumbs.db
 
 ./.tmp
+/bin
+/cover.out

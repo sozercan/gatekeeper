@@ -127,6 +127,7 @@ spec:
           }}
         - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
         - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
+        - --enable-runtime-v1alpha2-subjects={{ .Values.enableRuntimeV1Alpha2Subjects }}
 
         {{- if hasKey .Values "defaultK8sNativeValidationFailurePolicy"}}
         - --default-k8s-native-validation-failure-policy={{ .Values.defaultK8sNativeValidationFailurePolicy }}
@@ -249,7 +250,7 @@ spec:
       - name: cert
         secret:
           defaultMode: 420
-          secretName: gatekeeper-webhook-server-cert
+          secretName: {{ .Values.externalCertInjection.secretName }}
       {{- if and (.Values.enableViolationExport) (eq (.Values.exportBackend | default "" | lower) "disk") }}
       - {{- toYaml .Values.audit.exportVolume | nindent 8 }}
       {{- end }}

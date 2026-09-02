@@ -12,6 +12,13 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+const (
+	admissionTargetName = "admission.k8s.gatekeeper.sh"
+	regoEngineName      = "Rego"
+	runtimeEngineName   = "Runtime"
+	runtimeTargetName   = "runtime.gatekeeper.sh"
+)
+
 func preserveDefaultFailurePolicyForK8sNativeValidation(t *testing.T) {
 	t.Helper()
 	original := GetDefaultFailurePolicyForK8sNativeValidation()
@@ -197,6 +204,67 @@ func TestValidationErrors(t *testing.T) {
 			_, err := GetSourceFromTemplate(template)
 			if !errors.Is(err, test.expectedErr) {
 				t.Errorf("got %v; wanted %v", err, test.expectedErr)
+			}
+		})
+	}
+}
+
+func TestGetSourceFromMultiTargetTemplate(t *testing.T) {
+	validSource := (&Source{}).MustToUnstructured()
+	celCode := templates.Code{
+		Engine: Name,
+		Source: &templates.Anything{Value: validSource},
+	}
+
+	tests := []struct {
+		name      string
+		targets   []templates.Target
+		wantError error
+		wantHas   bool
+	}{
+		{
+			name: "CEL admission target with non-CEL runtime target",
+			targets: []templates.Target{
+				{Target: admissionTargetName, Code: []templates.Code{celCode}},
+				{Target: runtimeTargetName, Code: []templates.Code{{Engine: runtimeEngineName}}},
+			},
+			wantHas: true,
+		},
+		{
+			name: "non-CEL runtime target before CEL admission target",
+			targets: []templates.Target{
+				{Target: runtimeTargetName, Code: []templates.Code{{Engine: runtimeEngineName}}},
+				{Target: admissionTargetName, Code: []templates.Code{celCode}},
+			},
+			wantHas: true,
+		},
+		{
+			name: "Rego admission target with non-CEL runtime target",
+			targets: []templates.Target{
+				{Target: admissionTargetName, Code: []templates.Code{{Engine: regoEngineName}}},
+				{Target: runtimeTargetName, Code: []templates.Code{{Engine: runtimeEngineName}}},
+			},
+			wantError: ErrCELEngineMissing,
+		},
+		{
+			name: "CEL source on more than one target",
+			targets: []templates.Target{
+				{Target: admissionTargetName, Code: []templates.Code{celCode}},
+				{Target: "second.target", Code: []templates.Code{celCode}},
+			},
+			wantError: ErrOneTargetAllowed,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			template := &templates.ConstraintTemplate{Spec: templates.ConstraintTemplateSpec{Targets: test.targets}}
+			_, err := GetSourceFromTemplate(template)
+			if !errors.Is(err, test.wantError) {
+				t.Fatalf("GetSourceFromTemplate() error = %v, want %v", err, test.wantError)
+			}
+			if got := HasCELEngine(template); got != test.wantHas {
+				t.Fatalf("HasCELEngine() = %v, want %v", got, test.wantHas)
 			}
 		})
 	}

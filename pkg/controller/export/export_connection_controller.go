@@ -207,7 +207,7 @@ func (r *Reconciler) supportsConnection(connection *connectionv1alpha1.Connectio
 	if connection == nil {
 		return false
 	}
-	if r.runtimeExportEnabled && connection.Spec.AllowsSource(connectionv1alpha1.RuntimeSource) {
+	if r.runtimeExportEnabled && connection.AllowsRuntimeSource() {
 		return true
 	}
 	if connection.GetName() != r.auditConnectionName {

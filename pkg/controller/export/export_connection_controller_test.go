@@ -133,6 +133,22 @@ func TestConnectionPodStatusUpdateRequiresReconcile(t *testing.T) {
 	require.True(t, connectionPodStatusUpdateRequiresReconcile(oldStatus, newStatus))
 }
 
+func TestSupportsConnectionRuntimeAnnotationFallback(t *testing.T) {
+	t.Parallel()
+	reconciler := &Reconciler{runtimeExportEnabled: true}
+
+	annotated := &connectionv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{
+		Name: "runtime-connection",
+		Annotations: map[string]string{
+			connectionv1alpha1.RuntimeSourceAnnotation: string(connectionv1alpha1.RuntimeSource),
+		},
+	}}
+	require.True(t, reconciler.supportsConnection(annotated))
+
+	annotated.Spec.Sources = []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource}
+	require.False(t, reconciler.supportsConnection(annotated), "explicit non-runtime sources must override the annotation")
+}
+
 type conflictOnceWriter struct {
 	client.Client
 	onConflict func(context.Context) error

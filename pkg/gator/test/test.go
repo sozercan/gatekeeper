@@ -32,9 +32,10 @@ func init() {
 }
 
 func Test(objs []*unstructured.Unstructured, opts ...gator.Opt) (*GatorResponses, error) {
+	runtimeDriver := runtimepolicy.NewOfflineDriver()
 	args := []constraintclient.Opt{
-		constraintclient.Targets(&target.K8sValidationTarget{}, &runtimepolicy.Target{}),
-		constraintclient.Driver(runtimepolicy.NewOfflineDriver()),
+		constraintclient.Targets(&target.K8sValidationTarget{}, runtimepolicy.NewTarget(runtimeDriver)),
+		constraintclient.Driver(runtimeDriver),
 	}
 
 	driverArgs := []rego.Arg{}

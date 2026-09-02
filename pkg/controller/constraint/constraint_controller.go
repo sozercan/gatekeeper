@@ -260,8 +260,14 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 		}
 	}
 	if runtimeProjector != nil {
-		if err = c.Watch(source.Kind(mgr.GetCache(), runtimeProjector.RuntimePolicyWatchObject(), handler.TypedEnqueueRequestsFromMapFunc(eventPackerMapFuncFromOwnerRefs()))); err != nil {
-			return err
+		watchObjects := []client.Object{runtimeProjector.RuntimePolicyWatchObject()}
+		if multiVersion, ok := runtimeProjector.(runtimepolicy.MultiVersionProjector); ok {
+			watchObjects = multiVersion.RuntimePolicyWatchObjects()
+		}
+		for _, object := range watchObjects {
+			if err = c.Watch(source.Kind(mgr.GetCache(), object, handler.TypedEnqueueRequestsFromMapFunc(eventPackerMapFuncFromOwnerRefs()))); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -427,6 +433,10 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 			logAddition(r.log, instance, enforcementAction)
 		}
 
+		// Enforced is Gatekeeper's legacy cache-acceptance bit. It does not mean
+		// every enforcement point has completed its work. Runtime projection is
+		// reported separately below, where Projected means only that Gatekeeper
+		// wrote the RuntimePolicy authoring handoff.
 		status.Status.Enforced = true
 		statusBeforeVAPB = status.Status.DeepCopy()
 
@@ -436,21 +446,36 @@ func (r *ReconcileConstraint) Reconcile(ctx context.Context, request reconcile.R
 			status:            metrics.ActiveStatus,
 		})
 		reportMetrics = true
+		var runtimeProjectionErr error
 		if r.runtimeProjector != nil {
 			projection, handled, err := r.runtimeProjector.ReconcileConstraint(ctx, instance)
-			if err != nil {
+			switch {
+			case err != nil:
 				updateEnforcementPointStatus(status, runtimepolicy.EnforcementPoint, runtimepolicy.ProjectionError, err.Error(), instance.GetGeneration())
-				return reconcile.Result{}, r.reportErrorOnConstraintStatus(ctx, status, err, "could not project runtime constraint")
-			}
-			if handled {
+				status.Status.Errors = append(status.Status.Errors, constraintstatusv1beta1.Error{Message: fmt.Sprintf("could not project runtime constraint: %s", err)})
+				runtimeProjectionErr = err
+			case handled:
 				updateEnforcementPointStatus(status, runtimepolicy.EnforcementPoint, projection.State, projection.Message, instance.GetGeneration())
-				return reconcile.Result{}, nil
+			default:
+				cleanEnforcementPointStatus(status, runtimepolicy.EnforcementPoint)
 			}
-			cleanEnforcementPointStatus(status, runtimepolicy.EnforcementPoint)
 		}
 		requeueAfter, err := r.manageVAPB(ctx, enforcementAction, instance, status)
 		if err != nil {
+			if runtimeProjectionErr != nil {
+				combinedErr := &combinedStatusError{
+					message: fmt.Sprintf("could not project runtime constraint: %s; ValidatingAdmissionPolicyBinding reconciliation failed: %s", runtimeProjectionErr, err),
+					errs:    []error{runtimeProjectionErr, err},
+				}
+				return reconcile.Result{RequeueAfter: requeueAfter}, &reportedStatusError{
+					err:     combinedErr,
+					message: "could not reconcile runtime projection and ValidatingAdmissionPolicyBinding",
+				}
+			}
 			return reconcile.Result{RequeueAfter: requeueAfter}, err
+		}
+		if runtimeProjectionErr != nil {
+			return reconcile.Result{RequeueAfter: requeueAfter}, &reportedStatusError{err: runtimeProjectionErr, message: "could not project runtime constraint"}
 		}
 		if requeueAfter != time.Duration(0) {
 			log.Info("requeueing after", "requeueAfter", requeueAfter)
@@ -688,9 +713,14 @@ func (r *ReconcileConstraint) manageVAPB(ctx context.Context, enforcementAction 
 		hasVAP, err := ShouldGenerateVAP(unversionedCT)
 		switch {
 		case errors.Is(err, celSchema.ErrCELEngineMissing):
-			updateEnforcementPointStatus(status, util.VAPEnforcementPoint, ErrGenerateVAPBState, err.Error(), instance.GetGeneration())
-			r.reporter.ReportVAPBStatus(vapBindingKey, metrics.VAPStatusError)
-			generationPathSetStatus = true
+			if runtimepolicy.IsRuntimeTemplate(unversionedCT) && len(unversionedCT.Spec.Targets) == 1 {
+				cleanEnforcementPointStatus(status, util.VAPEnforcementPoint)
+				r.reporter.DeleteVAPBStatus(vapBindingKey)
+			} else {
+				updateEnforcementPointStatus(status, util.VAPEnforcementPoint, ErrGenerateVAPBState, err.Error(), instance.GetGeneration())
+				r.reporter.ReportVAPBStatus(vapBindingKey, metrics.VAPStatusError)
+				generationPathSetStatus = true
+			}
 			shouldGenerateVAPB = false
 		case err != nil:
 			log.Error(err, "could not determine if ConstraintTemplate is configured to generate ValidatingAdmissionPolicy", "constraint", instance.GetName(), "constraint_template", unversionedCT.GetName())

@@ -3,6 +3,10 @@ kind: Connection
 metadata:
   name: runtime-connection
   namespace: gatekeeper-system
+  # Managed distributions whose older Connection CRD prunes spec.sources may
+  # use this fail-closed fallback annotation instead of the sources field.
+  # annotations:
+  #   runtime.gatekeeper.sh/connection-source: runtime
 spec:
   driver: disk
   sources:

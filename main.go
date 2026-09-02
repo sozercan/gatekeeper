@@ -118,6 +118,7 @@ var (
 	port                                 = flag.Int("port", 443, "port for the server. defaulted to 443 if unspecified ")
 	host                                 = flag.String("host", "", "the host address the webhook server listens on. defaults to all addresses.")
 	certDir                              = flag.String("cert-dir", "/certs", "The directory where certs are stored, defaults to /certs")
+	certSecretName                       = flag.String("cert-secret-name", secretName, "The Secret name used to store generated webhook TLS certificates and keys")
 	disableCertRotation                  = flag.Bool("disable-cert-rotation", false, "disable automatic generation and rotation of webhook TLS certificates/keys")
 	enableProfile                        = flag.Bool("enable-pprof", false, "enable pprof profiling")
 	profilePort                          = flag.Int("pprof-port", 6060, "port for pprof profiling. defaulted to 6060 if unspecified")
@@ -128,6 +129,7 @@ var (
 	externaldataProviderResponseCacheTTL = flag.Duration("external-data-provider-response-cache-ttl", 3*time.Minute, "TTL for the external data provider response cache. Specify the duration in 'h', 'm', or 's' for hours, minutes, or seconds respectively. Defaults to 3 minutes if unspecified. Setting the TTL to 0 disables the cache.")
 	enableReferential                    = flag.Bool("enable-referential-rules", true, "Enable referential rules. This flag defaults to true. Set this value to false if you want to disallow referential constraints. Because referential constraints read objects other than the object-under-test, they may be subject to race conditions. Users concerned about this may want to disable referential rules")
 	enableRuntimeTarget                  = flag.Bool("enable-runtime-target", false, "Enable the runtime.gatekeeper.sh ConstraintTemplate target and RuntimePolicy projection. Requires the Gatekeeper Runtime CRDs and separate runtime controller/agent installation.")
+	enableRuntimeV1Alpha2Subjects        = flag.Bool("enable-runtime-v1alpha2-subjects", false, "Enable the experimental v1alpha2 normalized runtime subject source. Open only after every eligible Gatekeeper Runtime controller and agent advertises v1alpha2 support.")
 	shutdownDelay                        = flag.Int("shutdown-delay", 10, "Time in seconds the controller runtime shutdown gets delayed after receiving a pod termination event. Prevents failing webhooks on pod shutdown. default: 10")
 )
 
@@ -305,7 +307,7 @@ func innerMain() int {
 		if err := rotator.AddRotator(mgr, &rotator.CertRotator{
 			SecretKey: types.NamespacedName{
 				Namespace: util.GetNamespace(),
-				Name:      secretName,
+				Name:      *certSecretName,
 			},
 			CertDir:              *certDir,
 			CAName:               caName,
@@ -472,7 +474,8 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.
 		runtimeDriver = runtimepolicy.NewDriver(mgr.GetClient(), mgr.GetAPIReader(), func() []string {
 			return process.Get().GetExcludedNamespaces(process.Runtime)
 		})
-		targets = append(targets, &runtimepolicy.Target{})
+		runtimeDriver.SetV1Alpha2SubjectsEnabled(*enableRuntimeV1Alpha2Subjects)
+		targets = append(targets, runtimepolicy.NewTarget(runtimeDriver))
 	}
 	cfArgs := []constraintclient.Opt{constraintclient.Targets(targets...)}
 

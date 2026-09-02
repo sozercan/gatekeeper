@@ -93,6 +93,7 @@ spec:
         - --mutation-annotations={{ .Values.mutationAnnotations }}
         - --disable-cert-rotation={{ .Values.controllerManager.disableCertRotation
           }}
+        - --cert-secret-name={{ .Values.externalCertInjection.secretName }}
         - --max-serving-threads={{ .Values.maxServingThreads }}
         - --tls-min-version={{ .Values.controllerManager.tlsMinVersion }}
         - --validating-webhook-configuration-name={{ .Values.validatingWebhookName
@@ -104,6 +105,7 @@ spec:
           }}
         - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
         - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
+        - --enable-runtime-v1alpha2-subjects={{ .Values.enableRuntimeV1Alpha2Subjects }}
 
         {{- if hasKey .Values "defaultK8sNativeValidationFailurePolicy"}}
         - --default-k8s-native-validation-failure-policy={{ .Values.defaultK8sNativeValidationFailurePolicy }}
@@ -273,4 +275,4 @@ spec:
       - name: cert
         secret:
           defaultMode: 420
-          secretName: gatekeeper-webhook-server-cert
+          secretName: {{ .Values.externalCertInjection.secretName }}

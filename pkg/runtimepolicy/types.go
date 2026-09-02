@@ -32,6 +32,37 @@ type Match struct {
 	ExcludedNamespaces []string             `json:"excludedNamespaces,omitempty"`
 }
 
+// PolicySubject is the v1alpha2 semantic one-of runtime subject. Exactly one
+// field must be set.
+type PolicySubject struct {
+	Kubernetes *KubernetesSubject `json:"kubernetes,omitempty"`
+	Substrate  *SubstrateSubject  `json:"substrate,omitempty"`
+}
+
+type KubernetesSubject struct {
+	NamespaceSelector  metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+	PodSelector        metav1.LabelSelector `json:"podSelector,omitempty"`
+	ExcludedNamespaces []string             `json:"excludedNamespaces,omitempty"`
+	RuntimeClassNames  []string             `json:"runtimeClassNames,omitempty"`
+	ContainerTypes     []string             `json:"containerTypes,omitempty"`
+	ContainerNames     []string             `json:"containerNames,omitempty"`
+}
+
+type SubstrateSubject struct {
+	AtespacePatterns    []string             `json:"atespacePatterns"`
+	ActorTemplate       *ActorTemplateMatch  `json:"actorTemplate,omitempty"`
+	ActorTemplateLabels metav1.LabelSelector `json:"actorTemplateLabels,omitempty"`
+	SandboxClasses      []string             `json:"sandboxClasses,omitempty"`
+	ContainerNames      []string             `json:"containerNames,omitempty"`
+}
+
+type ActorTemplateMatch struct {
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
+	UID        string `json:"uid,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
+}
+
 type Behaviors struct {
 	Process     *ProcessBehavior     `json:"process,omitempty"`
 	File        *FileBehavior        `json:"file,omitempty"`

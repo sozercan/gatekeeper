@@ -112,6 +112,8 @@ var replacements = map[string]string{
 
 	`HELMSUBST_SECRET_ANNOTATIONS: ""`: `{{- toYaml .Values.secretAnnotations | trim | nindent 4 }}`,
 
+	"secretName: gatekeeper-webhook-server-cert": `secretName: {{ .Values.externalCertInjection.secretName }}`,
+
 	"- HELMSUBST_TLS_HEALTHCHECK_ENABLED_ARG": `{{ if .Values.enableTLSHealthcheck}}- --enable-tls-healthcheck{{- end }}`,
 
 	"- HELMSUBST_ADDITIONAL_VALIDATING_WEBHOOK_CONFIGS_TO_ROTATE_CERTS": `{{ if .Values.additionalValidatingWebhookConfigsToRotateCerts | empty | not }}- --additional-validating-webhook-configs-to-rotate-certs={{ .Values.additionalValidatingWebhookConfigsToRotateCerts | join "," }}{{- end }}`,

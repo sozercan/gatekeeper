@@ -1,0 +1,26 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RuntimeSubstrateProcess
+metadata:
+  name: substrate-shell-policy
+spec:
+  enforcementAction: deny
+  match:
+    subject:
+      substrate:
+        atespacePatterns:
+        - team-*
+        actorTemplate:
+          namespace: templates
+          name: agent
+        sandboxClasses:
+        - microvm
+        containerNames:
+        - actor
+  parameters:
+    failurePolicy: FailClosed
+    behaviors:
+      process:
+        defaultAction: Deny
+        executables:
+        - path: /usr/bin/agent
+          action: Allow

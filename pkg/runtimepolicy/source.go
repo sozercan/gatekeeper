@@ -94,8 +94,15 @@ func ValidateTemplate(ct *templates.ConstraintTemplate) (bool, error) {
 	if err := decodeStrict(code.Source.GetValue(), &source); err != nil {
 		return true, fmt.Errorf("%w: %w", ErrInvalidRuntimeSource, err)
 	}
-	if source.Version != SourceVersion {
-		return true, fmt.Errorf("%w: version must be %q, got %q", ErrInvalidRuntimeSource, SourceVersion, source.Version)
+	if source.Version != SourceVersion && source.Version != SubjectSourceVersion {
+		return true, fmt.Errorf("%w: version must be %q or %q, got %q", ErrInvalidRuntimeSource, SourceVersion, SubjectSourceVersion, source.Version)
+	}
+	// Frameworks merges every target's match schema into one Constraint match.
+	// A Substrate-only v1alpha2 match would look empty to the Kubernetes target
+	// and could broaden admission. Keep the normalized contract runtime-only
+	// until frameworks has target-specific match sections.
+	if source.Version == SubjectSourceVersion && len(ct.Spec.Targets) != 1 {
+		return true, fmt.Errorf("%w: source version %q must use a runtime-only ConstraintTemplate", ErrInvalidRuntimeTemplate, SubjectSourceVersion)
 	}
 
 	validation := ct.Spec.CRD.Spec.Validation
@@ -107,6 +114,24 @@ func ValidateTemplate(ct *templates.ConstraintTemplate) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func sourceVersion(ct *templates.ConstraintTemplate) (string, error) {
+	if ct == nil {
+		return "", fmt.Errorf("%w: template is required", ErrInvalidRuntimeTemplate)
+	}
+	for i := range ct.Spec.Targets {
+		target := &ct.Spec.Targets[i]
+		if target.Target != TargetName || len(target.Code) != 1 || target.Code[0].Source == nil {
+			continue
+		}
+		var source Source
+		if err := decodeStrict(target.Code[0].Source.GetValue(), &source); err != nil {
+			return "", fmt.Errorf("%w: %w", ErrInvalidRuntimeSource, err)
+		}
+		return source.Version, nil
+	}
+	return "", fmt.Errorf("%w: target %q is required", ErrInvalidRuntimeTemplate, TargetName)
 }
 
 func decodeStrict(value interface{}, into interface{}) error {

@@ -351,21 +351,26 @@ func GetSource(code templates.Code) (*Source, error) {
 }
 
 func GetSourceFromTemplate(ct *templates.ConstraintTemplate) (*Source, error) {
-	if len(ct.Spec.Targets) != 1 {
-		return nil, ErrOneTargetAllowed
-	}
-
 	var source *Source
-	for _, code := range ct.Spec.Targets[0].Code {
-		if code.Engine != Name {
-			continue
+	var sourceTarget int
+	foundTarget := false
+	for targetIndex, target := range ct.Spec.Targets {
+		for _, code := range target.Code {
+			if code.Engine != Name {
+				continue
+			}
+			if foundTarget && sourceTarget != targetIndex {
+				return nil, ErrOneTargetAllowed
+			}
+			var err error
+			source, err = GetSource(code)
+			if err != nil {
+				return nil, err
+			}
+			sourceTarget = targetIndex
+			foundTarget = true
+			break
 		}
-		var err error
-		source, err = GetSource(code)
-		if err != nil {
-			return nil, err
-		}
-		break
 	}
 	if source == nil {
 		return nil, ErrCELEngineMissing
@@ -377,13 +382,22 @@ func GetSourceFromTemplate(ct *templates.ConstraintTemplate) (*Source, error) {
 // HasCELEngine checks if the ConstraintTemplate has a CEL engine code block,
 // without validating the source content.
 func HasCELEngine(ct *templates.ConstraintTemplate) bool {
-	if len(ct.Spec.Targets) != 1 {
-		return false
-	}
-	for _, code := range ct.Spec.Targets[0].Code {
-		if code.Engine == Name {
-			return true
+	foundTarget := false
+	for _, target := range ct.Spec.Targets {
+		targetHasCEL := false
+		for _, code := range target.Code {
+			if code.Engine == Name {
+				targetHasCEL = true
+				break
+			}
 		}
+		if !targetHasCEL {
+			continue
+		}
+		if foundTarget {
+			return false
+		}
+		foundTarget = true
 	}
-	return false
+	return foundTarget
 }

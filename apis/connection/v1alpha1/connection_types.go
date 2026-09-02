@@ -51,6 +51,12 @@ const (
 	AuditSource   ConnectionSource = "audit"
 	WebhookSource ConnectionSource = "webhook"
 	RuntimeSource ConnectionSource = "runtime"
+
+	// RuntimeSourceAnnotation is the fail-closed compatibility contract for
+	// clusters whose managed Gatekeeper installation owns an older Connection
+	// CRD and prunes spec.sources. It is considered only when spec.sources is
+	// omitted and can enable only the dedicated runtime source.
+	RuntimeSourceAnnotation = "runtime.gatekeeper.sh/connection-source"
 )
 
 // AllowsSource reports whether source is explicitly enabled. Runtime is never
@@ -62,6 +68,20 @@ func (spec ConnectionSpec) AllowsSource(source ConnectionSource) bool {
 		}
 	}
 	return false
+}
+
+// AllowsRuntimeSource reports whether the Connection is dedicated to runtime
+// findings. Explicit spec.sources is authoritative. The annotation fallback is
+// accepted only when that list is omitted, so it cannot turn an audit/webhook
+// or mixed-source Connection into a runtime producer endpoint.
+func (connection *Connection) AllowsRuntimeSource() bool {
+	if connection == nil {
+		return false
+	}
+	if len(connection.Spec.Sources) != 0 {
+		return len(connection.Spec.Sources) == 1 && connection.Spec.AllowsSource(RuntimeSource)
+	}
+	return connection.GetAnnotations()[RuntimeSourceAnnotation] == string(RuntimeSource)
 }
 
 // ConnectionStatus defines the observed state of Connection.

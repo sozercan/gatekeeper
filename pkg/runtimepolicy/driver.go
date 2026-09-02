@@ -43,12 +43,13 @@ var ErrRuntimeReviewUnsupported = errors.New("runtime constraints are projected 
 // In Gatekeeper it also projects constraints through the Kubernetes API; Gator
 // uses the same driver without a writer for offline validation parity.
 type Driver struct {
-	mu          sync.RWMutex
-	templates   map[string]*templates.ConstraintTemplate
-	constraints map[string]map[string]*unstructured.Unstructured
-	writer      client.Client
-	reader      client.Reader
-	exclusions  func() []string
+	mu               sync.RWMutex
+	templates        map[string]*templates.ConstraintTemplate
+	constraints      map[string]map[string]*unstructured.Unstructured
+	writer           client.Client
+	reader           client.Reader
+	exclusions       func() []string
+	v1alpha2Subjects bool
 }
 
 func NewDriver(writer client.Client, reader client.Reader, exclusionProviders ...func() []string) *Driver {
@@ -64,7 +65,20 @@ func NewDriver(writer client.Client, reader client.Reader, exclusionProviders ..
 	return driver
 }
 
-func NewOfflineDriver() *Driver { return NewDriver(nil, nil) }
+func NewOfflineDriver() *Driver {
+	driver := NewDriver(nil, nil)
+	driver.v1alpha2Subjects = true
+	return driver
+}
+
+// SetV1Alpha2SubjectsEnabled controls the experimental normalized subject
+// source. Clustered Gatekeeper leaves it disabled until the runtime fleet has
+// advertised v1alpha2 support and the operator opens both component gates.
+func (d *Driver) SetV1Alpha2SubjectsEnabled(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.v1alpha2Subjects = enabled
+}
 
 func (*Driver) Name() string { return EngineName }
 
@@ -76,9 +90,28 @@ func (d *Driver) AddTemplate(_ context.Context, template *templates.ConstraintTe
 	if !handled {
 		return fmt.Errorf("%w: target must be %q", ErrInvalidRuntimeTemplate, TargetName)
 	}
+	version, err := sourceVersion(template)
+	if err != nil {
+		return err
+	}
+	d.mu.RLock()
+	v1alpha2Enabled := d.v1alpha2Subjects
+	d.mu.RUnlock()
+	if version == SubjectSourceVersion && !v1alpha2Enabled {
+		return fmt.Errorf("%w: source version %q is disabled until the runtime fleet feature gate is enabled", ErrInvalidRuntimeTemplate, SubjectSourceVersion)
+	}
 	key := strings.ToLower(template.Spec.CRD.Spec.Names.Kind)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if existing := d.templates[key]; existing != nil && len(d.constraints[key]) != 0 {
+		existingVersion, err := sourceVersion(existing)
+		if err != nil {
+			return err
+		}
+		if existingVersion != version {
+			return fmt.Errorf("%w: source version for kind %q cannot change from %q to %q while Constraints exist", ErrInvalidRuntimeTemplate, template.Spec.CRD.Spec.Names.Kind, existingVersion, version)
+		}
+	}
 	d.templates[key] = template.DeepCopy()
 	if d.constraints[key] == nil {
 		d.constraints[key] = make(map[string]*unstructured.Unstructured)
@@ -95,7 +128,7 @@ func (d *Driver) RemoveTemplate(ctx context.Context, template *templates.Constra
 	}
 	d.mu.RUnlock()
 	for _, constraint := range constraints {
-		if err := deleteRuntimePolicy(ctx, d.writer, d.reader, constraint); err != nil {
+		if err := d.deleteRuntimePolicy(ctx, constraint); err != nil {
 			return err
 		}
 	}
@@ -107,10 +140,20 @@ func (d *Driver) RemoveTemplate(ctx context.Context, template *templates.Constra
 }
 
 func (d *Driver) AddConstraint(_ context.Context, constraint *unstructured.Unstructured) error {
-	if _, err := ParseConstraint(constraint); err != nil {
+	key := strings.ToLower(constraint.GetKind())
+	d.mu.RLock()
+	template := d.templates[key]
+	d.mu.RUnlock()
+	if template == nil {
+		return fmt.Errorf("%w: no runtime template for kind %q", ErrInvalidRuntimeConstraint, constraint.GetKind())
+	}
+	version, err := sourceVersion(template)
+	if err != nil {
 		return err
 	}
-	key := strings.ToLower(constraint.GetKind())
+	if _, err := ParseConstraintForSource(constraint, version); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.templates[key] == nil {
@@ -139,7 +182,7 @@ func (d *Driver) RemoveConstraint(ctx context.Context, constraint *unstructured.
 	if cached == nil {
 		return nil
 	}
-	if err := deleteRuntimePolicy(ctx, d.writer, d.reader, cached); err != nil {
+	if err := d.deleteRuntimePolicy(ctx, cached); err != nil {
 		return err
 	}
 	d.mu.Lock()
@@ -176,7 +219,7 @@ func (d *Driver) Dump(_ context.Context) (string, error) {
 	})
 	policies := make([]map[string]interface{}, 0, len(constraints))
 	for _, constraint := range constraints {
-		policy, err := buildRuntimePolicyWithExclusions(constraint, d.configuredExclusions())
+		policy, err := d.buildRuntimePolicy(constraint, d.configuredExclusions())
 		if err != nil {
 			return "", err
 		}
@@ -201,11 +244,22 @@ func (d *Driver) ReconcileConstraint(ctx context.Context, constraint *unstructur
 	if !handled {
 		return ProjectionStatus{}, false, nil
 	}
-	status, err := projectRuntimePolicy(ctx, d.writer, d.reader, constraint, d.configuredExclusions())
+	status, err := d.projectRuntimePolicy(ctx, constraint, d.configuredExclusions())
 	return status, true, err
 }
 
 func (*Driver) RuntimePolicyWatchObject() client.Object { return RuntimePolicyWatchObject() }
+
+func (d *Driver) RuntimePolicyWatchObjects() []client.Object {
+	objects := []client.Object{runtimePolicyWatchObject(RuntimePolicyAPIVersion)}
+	d.mu.RLock()
+	v1alpha2Enabled := d.v1alpha2Subjects
+	d.mu.RUnlock()
+	if v1alpha2Enabled {
+		objects = append(objects, runtimePolicyWatchObject(RuntimePolicyAPIVersionV1Alpha2))
+	}
+	return objects
+}
 
 // ConfigRefresher is implemented by runtime projectors that can immediately
 // reconcile existing projections after Gatekeeper Config changes.
@@ -238,9 +292,55 @@ func (d *Driver) RefreshConfig(ctx context.Context) error {
 	exclusions := d.configuredExclusions()
 	var errs []error
 	for _, constraint := range constraints {
-		if _, err := projectRuntimePolicy(ctx, d.writer, d.reader, constraint, exclusions); err != nil {
+		if _, err := d.projectRuntimePolicy(ctx, constraint, exclusions); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (d *Driver) parseConstraint(constraint *unstructured.Unstructured) (*ParsedConstraint, error) {
+	if constraint == nil {
+		return nil, fmt.Errorf("%w: object is required", ErrInvalidRuntimeConstraint)
+	}
+	key := strings.ToLower(constraint.GetKind())
+	d.mu.RLock()
+	template := d.templates[key]
+	d.mu.RUnlock()
+	if template == nil {
+		return nil, fmt.Errorf("%w: no runtime template for kind %q", ErrInvalidRuntimeConstraint, constraint.GetKind())
+	}
+	version, err := sourceVersion(template)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConstraintForSource(constraint, version)
+}
+
+func (d *Driver) buildRuntimePolicy(constraint *unstructured.Unstructured, exclusions []string) (*unstructured.Unstructured, error) {
+	parsed, err := d.parseConstraint(constraint)
+	if err != nil {
+		return nil, err
+	}
+	return buildRuntimePolicyFromParsed(constraint, parsed, exclusions)
+}
+
+func (d *Driver) projectRuntimePolicy(ctx context.Context, constraint *unstructured.Unstructured, exclusions []string) (ProjectionStatus, error) {
+	parsed, err := d.parseConstraint(constraint)
+	if err != nil {
+		return ProjectionStatus{}, err
+	}
+	return projectRuntimePolicyFromParsed(ctx, d.writer, d.reader, constraint, parsed, exclusions)
+}
+
+func (d *Driver) deleteRuntimePolicy(ctx context.Context, constraint *unstructured.Unstructured) error {
+	parsed, err := d.parseConstraint(constraint)
+	if err != nil {
+		return err
+	}
+	apiVersion := RuntimePolicyAPIVersion
+	if parsed.SourceVersion == SubjectSourceVersion {
+		apiVersion = RuntimePolicyAPIVersionV1Alpha2
+	}
+	return deleteRuntimePolicyVersion(ctx, d.writer, d.reader, constraint, apiVersion)
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -35,12 +36,21 @@ var ErrInvalidRuntimeConstraint = errors.New("invalid runtime Constraint")
 
 var namespaceExclusionPattern = regexp.MustCompile(`^\*?[-:a-z0-9]*\*?$`)
 
+const (
+	maxAtespacePatterns = 32
+	maxAtespaceLength   = 63
+	maxSubjectNames     = 64
+)
+
 // ParsedConstraint is a validated runtime Constraint ready for projection.
 type ParsedConstraint struct {
+	SourceVersion string
 	Mode          string
 	Match         Match
+	Subject       PolicySubject
 	Parameters    Parameters
 	RawMatch      map[string]interface{}
+	RawSubject    map[string]interface{}
 	RawParameters map[string]interface{}
 }
 
@@ -48,6 +58,13 @@ type ParsedConstraint struct {
 // Constraint. Runtime mode is derived from Gatekeeper enforcementAction:
 // deny maps to Enforce and dryrun maps to Monitor.
 func ParseConstraint(constraint *unstructured.Unstructured) (*ParsedConstraint, error) {
+	return ParseConstraintForSource(constraint, SourceVersion)
+}
+
+// ParseConstraintForSource validates a Constraint against one declared runtime
+// target source version. v1alpha1 accepts only the legacy flat Kubernetes
+// match. v1alpha2 accepts only the normalized one-of subject.
+func ParseConstraintForSource(constraint *unstructured.Unstructured, version string) (*ParsedConstraint, error) {
 	if constraint == nil {
 		return nil, fmt.Errorf("%w: object is required", ErrInvalidRuntimeConstraint)
 	}
@@ -77,12 +94,28 @@ func ParseConstraint(constraint *unstructured.Unstructured) (*ParsedConstraint, 
 	if !found {
 		rawMatch = map[string]interface{}{}
 	}
-	match, normalizedMatch, err := decodeRuntimeMatch(rawMatch)
-	if err != nil {
-		return nil, fmt.Errorf("%w: spec.match: %w", ErrInvalidRuntimeConstraint, err)
-	}
-	if err := validateMatch(&match); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
+	var match Match
+	var subject PolicySubject
+	var normalizedMatch, normalizedSubject map[string]interface{}
+	switch version {
+	case SourceVersion:
+		match, normalizedMatch, err = decodeRuntimeMatch(rawMatch)
+		if err != nil {
+			return nil, fmt.Errorf("%w: spec.match: %w", ErrInvalidRuntimeConstraint, err)
+		}
+		if err := validateMatch(&match); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
+		}
+	case SubjectSourceVersion:
+		subject, normalizedSubject, err = decodeRuntimeSubject(rawMatch)
+		if err != nil {
+			return nil, fmt.Errorf("%w: spec.match: %w", ErrInvalidRuntimeConstraint, err)
+		}
+		if err := validateSubject(&subject); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
+		}
+	default:
+		return nil, fmt.Errorf("%w: unsupported source version %q", ErrInvalidRuntimeConstraint, version)
 	}
 
 	rawParameters, found, err := unstructured.NestedMap(constraint.Object, "spec", "parameters")
@@ -101,12 +134,37 @@ func ParseConstraint(constraint *unstructured.Unstructured) (*ParsedConstraint, 
 	}
 
 	return &ParsedConstraint{
+		SourceVersion: version,
 		Mode:          mode,
 		Match:         match,
+		Subject:       subject,
 		Parameters:    parameters,
 		RawMatch:      normalizedMatch,
+		RawSubject:    normalizedSubject,
 		RawParameters: rawParameters,
 	}, nil
+}
+
+func decodeRuntimeSubject(raw map[string]interface{}) (PolicySubject, map[string]interface{}, error) {
+	if len(raw) != 1 {
+		if _, hasSubject := raw["subject"]; hasSubject {
+			return PolicySubject{}, nil, errors.New("normalized subject cannot be combined with legacy or admission match fields")
+		}
+		return PolicySubject{}, nil, errors.New("source version v1alpha2 requires spec.match.subject")
+	}
+	rawSubject, ok := raw["subject"].(map[string]interface{})
+	if !ok {
+		return PolicySubject{}, nil, errors.New("subject must be an object")
+	}
+	var subject PolicySubject
+	if err := decodeStrict(rawSubject, &subject); err != nil {
+		return PolicySubject{}, nil, err
+	}
+	normalized, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&subject)
+	if err != nil {
+		return PolicySubject{}, nil, fmt.Errorf("normalize subject: %w", err)
+	}
+	return subject, normalized, nil
 }
 
 func decodeRuntimeMatch(raw map[string]interface{}) (Match, map[string]interface{}, error) {
@@ -196,6 +254,180 @@ func validateMatch(match *Match) error {
 			return fmt.Errorf("spec.match.excludedNamespaces[%d] duplicates %q", i, namespace)
 		}
 		seenNamespaces[namespace] = struct{}{}
+	}
+	return nil
+}
+
+// NormalizeLegacyKubernetesSubject converts the v1alpha1 flat match to the
+// v1alpha2 Kubernetes subject without changing legacy matching semantics.
+func NormalizeLegacyKubernetesSubject(match *Match) (PolicySubject, error) {
+	if match == nil {
+		return PolicySubject{}, errors.New("legacy Kubernetes match is required")
+	}
+	if err := validateMatch(match); err != nil {
+		return PolicySubject{}, err
+	}
+	containerTypes := append([]string(nil), match.ContainerTypes...)
+	if len(containerTypes) == 0 {
+		containerTypes = []string{"Application", "Init", "Ephemeral"}
+	}
+	return PolicySubject{Kubernetes: &KubernetesSubject{
+		NamespaceSelector:  *match.NamespaceSelector.DeepCopy(),
+		PodSelector:        *match.PodSelector.DeepCopy(),
+		ExcludedNamespaces: append([]string(nil), match.ExcludedNamespaces...),
+		ContainerTypes:     containerTypes,
+	}}, nil
+}
+
+func validateSubject(subject *PolicySubject) error {
+	set := 0
+	if subject.Kubernetes != nil {
+		set++
+	}
+	if subject.Substrate != nil {
+		set++
+	}
+	if set != 1 {
+		return errors.New("spec.match.subject must set exactly one of kubernetes or substrate")
+	}
+	if subject.Kubernetes != nil {
+		return validateKubernetesSubject(subject.Kubernetes)
+	}
+	return validateSubstrateSubject(subject.Substrate)
+}
+
+func validateKubernetesSubject(subject *KubernetesSubject) error {
+	if subject == nil {
+		return errors.New("spec.match.subject.kubernetes is required")
+	}
+	if selectorEmpty(subject.NamespaceSelector) && selectorEmpty(subject.PodSelector) &&
+		len(subject.ExcludedNamespaces) == 0 && len(subject.RuntimeClassNames) == 0 &&
+		len(subject.ContainerTypes) == 0 && len(subject.ContainerNames) == 0 {
+		return errors.New("spec.match.subject.kubernetes must contain at least one selector")
+	}
+	legacy := Match{
+		NamespaceSelector: subject.NamespaceSelector, PodSelector: subject.PodSelector,
+		ContainerTypes: subject.ContainerTypes, ExcludedNamespaces: subject.ExcludedNamespaces,
+	}
+	if err := validateMatch(&legacy); err != nil {
+		return err
+	}
+	if err := validateDNSNames("spec.match.subject.kubernetes.runtimeClassNames", subject.RuntimeClassNames, utilvalidation.IsDNS1123Subdomain); err != nil {
+		return err
+	}
+	return validateDNSNames("spec.match.subject.kubernetes.containerNames", subject.ContainerNames, utilvalidation.IsDNS1123Label)
+}
+
+func validateSubstrateSubject(subject *SubstrateSubject) error {
+	if subject == nil {
+		return errors.New("spec.match.subject.substrate is required")
+	}
+	if len(subject.AtespacePatterns) == 0 {
+		return errors.New("spec.match.subject.substrate.atespacePatterns must not be empty")
+	}
+	if len(subject.AtespacePatterns) > maxAtespacePatterns {
+		return fmt.Errorf("spec.match.subject.substrate.atespacePatterns has %d entries; maximum is %d", len(subject.AtespacePatterns), maxAtespacePatterns)
+	}
+	seen := make(map[string]struct{}, len(subject.AtespacePatterns))
+	for i, pattern := range subject.AtespacePatterns {
+		if err := validateAtespacePattern(pattern); err != nil {
+			return fmt.Errorf("spec.match.subject.substrate.atespacePatterns[%d]: %w", i, err)
+		}
+		if _, found := seen[pattern]; found {
+			return fmt.Errorf("spec.match.subject.substrate.atespacePatterns[%d] duplicates %q", i, pattern)
+		}
+		seen[pattern] = struct{}{}
+	}
+	if actorTemplate := subject.ActorTemplate; actorTemplate != nil {
+		if errs := utilvalidation.IsDNS1123Label(actorTemplate.Namespace); len(errs) != 0 {
+			return fmt.Errorf("spec.match.subject.substrate.actorTemplate.namespace: %s", strings.Join(errs, ", "))
+		}
+		if errs := utilvalidation.IsDNS1123Subdomain(actorTemplate.Name); len(errs) != 0 {
+			return fmt.Errorf("spec.match.subject.substrate.actorTemplate.name: %s", strings.Join(errs, ", "))
+		}
+		if actorTemplate.Generation < 0 {
+			return errors.New("spec.match.subject.substrate.actorTemplate.generation cannot be negative")
+		}
+		if actorTemplate.Generation > 0 && actorTemplate.UID == "" {
+			return errors.New("spec.match.subject.substrate.actorTemplate.uid is required when generation is set")
+		}
+		if len(actorTemplate.UID) > 128 {
+			return errors.New("spec.match.subject.substrate.actorTemplate.uid exceeds 128 bytes")
+		}
+	}
+	if err := validateBoundedLabelSelector("spec.match.subject.substrate.actorTemplateLabels", subject.ActorTemplateLabels); err != nil {
+		return err
+	}
+	if err := validateDNSNames("spec.match.subject.substrate.sandboxClasses", subject.SandboxClasses, utilvalidation.IsDNS1123Subdomain); err != nil {
+		return err
+	}
+	return validateDNSNames("spec.match.subject.substrate.containerNames", subject.ContainerNames, utilvalidation.IsDNS1123Label)
+}
+
+func selectorEmpty(selector metav1.LabelSelector) bool {
+	return len(selector.MatchLabels) == 0 && len(selector.MatchExpressions) == 0
+}
+
+func validateBoundedLabelSelector(field string, selector metav1.LabelSelector) error {
+	if len(selector.MatchLabels) > 64 {
+		return fmt.Errorf("%s.matchLabels has %d entries; maximum is 64", field, len(selector.MatchLabels))
+	}
+	if len(selector.MatchExpressions) > 64 {
+		return fmt.Errorf("%s.matchExpressions has %d entries; maximum is 64", field, len(selector.MatchExpressions))
+	}
+	for i, expression := range selector.MatchExpressions {
+		if len(expression.Values) > 256 {
+			return fmt.Errorf("%s.matchExpressions[%d].values has %d entries; maximum is 256", field, i, len(expression.Values))
+		}
+	}
+	if _, err := metav1.LabelSelectorAsSelector(&selector); err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	return nil
+}
+
+func validateDNSNames(field string, values []string, validate func(string) []string) error {
+	if len(values) > maxSubjectNames {
+		return fmt.Errorf("%s has %d entries; maximum is %d", field, len(values), maxSubjectNames)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for i, value := range values {
+		if errs := validate(value); len(errs) != 0 {
+			return fmt.Errorf("%s[%d]: %s", field, i, strings.Join(errs, ", "))
+		}
+		if _, found := seen[value]; found {
+			return fmt.Errorf("%s[%d] duplicates %q", field, i, value)
+		}
+		seen[value] = struct{}{}
+	}
+	return nil
+}
+
+// validateAtespacePattern accepts a lowercase DNS label or a trailing wildcard
+// whose bounded prefix ends in '-'. Matching is bytewise and case-sensitive.
+func validateAtespacePattern(pattern string) error {
+	if pattern == "" {
+		return errors.New("pattern is empty")
+	}
+	if len(pattern) > maxAtespaceLength {
+		return fmt.Errorf("pattern is %d bytes; maximum is %d", len(pattern), maxAtespaceLength)
+	}
+	wildcards := strings.Count(pattern, "*")
+	if wildcards == 0 {
+		if errs := utilvalidation.IsDNS1123Label(pattern); len(errs) != 0 {
+			return fmt.Errorf("exact atespace %q is invalid: %s", pattern, strings.Join(errs, ", "))
+		}
+		return nil
+	}
+	if wildcards != 1 || !strings.HasSuffix(pattern, "*") {
+		return errors.New("wildcard must appear once at the end")
+	}
+	prefix := strings.TrimSuffix(pattern, "*")
+	if len(prefix) < 3 || !strings.HasSuffix(prefix, "-") {
+		return errors.New("wildcard prefix must be at least three bytes and end in '-'")
+	}
+	if errs := utilvalidation.IsDNS1123Label(prefix + "x"); len(errs) != 0 {
+		return fmt.Errorf("wildcard prefix %q is invalid: %s", prefix, strings.Join(errs, ", "))
 	}
 	return nil
 }

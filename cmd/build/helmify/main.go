@@ -152,6 +152,7 @@ func (ks *kindSet) Write() error {
 			destFile := path.Join(*outputDir, subPath, fileName)
 
 			if name == "gatekeeper-webhook-server-cert" && kind == "Secret" {
+				obj = strings.Replace(obj, "  name: gatekeeper-webhook-server-cert\n", "  name: {{ .Values.externalCertInjection.secretName }}\n", 1)
 				obj = "{{- if not .Values.externalCertInjection.enabled }}\n" + obj + "{{- end }}\n"
 			}
 

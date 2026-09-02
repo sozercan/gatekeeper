@@ -23,13 +23,17 @@ const (
 	// Runtime sources are declarative metadata, not executable Rego or CEL.
 	EngineName = "Runtime"
 
-	// SourceVersion is the version of the declarative runtime template source.
+	// SourceVersion is the legacy flat-Kubernetes declarative source contract.
 	SourceVersion = "v1alpha1"
+
+	// SubjectSourceVersion is the normalized one-of subject source contract.
+	SubjectSourceVersion = "v1alpha2"
 
 	// EnforcementPoint identifies runtime projection in Constraint status.
 	EnforcementPoint = "runtime.gatekeeper.sh"
 
-	RuntimePolicyAPIVersion  = "runtime.gatekeeper.sh/v1alpha1"
-	RuntimePolicyKind        = "RuntimePolicy"
-	runtimePolicyModeEnforce = "Enforce"
+	RuntimePolicyAPIVersion         = "runtime.gatekeeper.sh/v1alpha1"
+	RuntimePolicyAPIVersionV1Alpha2 = "runtime.gatekeeper.sh/v1alpha2"
+	RuntimePolicyKind               = "RuntimePolicy"
+	runtimePolicyModeEnforce        = "Enforce"
 )

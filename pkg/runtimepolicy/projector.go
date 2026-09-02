@@ -34,9 +34,9 @@ import (
 )
 
 const (
-	ProjectionPending = "Pending"
-	ProjectionActive  = "Active"
-	ProjectionError   = "Error"
+	ProjectionPending   = "Pending"
+	ProjectionProjected = "Projected"
+	ProjectionError     = "Error"
 )
 
 const (
@@ -62,11 +62,21 @@ type Projector interface {
 	RuntimePolicyWatchObject() client.Object
 }
 
+// MultiVersionProjector exposes every served RuntimePolicy version without
+// forcing an unsafe conversion through the legacy API.
+type MultiVersionProjector interface {
+	RuntimePolicyWatchObjects() []client.Object
+}
+
 // RuntimePolicyWatchObject returns an unstructured RuntimePolicy suitable for
 // a controller-runtime watch without importing the standalone runtime API.
 func RuntimePolicyWatchObject() *unstructured.Unstructured {
+	return runtimePolicyWatchObject(RuntimePolicyAPIVersion)
+}
+
+func runtimePolicyWatchObject(apiVersion string) *unstructured.Unstructured {
 	object := &unstructured.Unstructured{}
-	object.SetGroupVersionKind(schema.FromAPIVersionAndKind(RuntimePolicyAPIVersion, RuntimePolicyKind))
+	object.SetGroupVersionKind(schema.FromAPIVersionAndKind(apiVersion, RuntimePolicyKind))
 	return object
 }
 
@@ -79,35 +89,41 @@ func buildRuntimePolicyWithExclusions(constraint *unstructured.Unstructured, con
 	if err != nil {
 		return nil, err
 	}
+	return buildRuntimePolicyFromParsed(constraint, parsed, configuredExclusions)
+}
 
+func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed *ParsedConstraint, configuredExclusions []string) (*unstructured.Unstructured, error) {
 	spec, ok := runtime.DeepCopyJSONValue(parsed.RawParameters).(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("%w: spec.parameters is not an object", ErrInvalidRuntimeConstraint)
 	}
 	spec["mode"] = parsed.Mode
-	match, ok := runtime.DeepCopyJSONValue(parsed.RawMatch).(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("%w: spec.match is not an object", ErrInvalidRuntimeConstraint)
-	}
-	excluded := append([]string(nil), parsed.Match.ExcludedNamespaces...)
-	excluded = append(excluded, configuredExclusions...)
-	sort.Strings(excluded)
-	unique := excluded[:0]
-	for _, namespace := range excluded {
-		if len(unique) == 0 || unique[len(unique)-1] != namespace {
-			unique = append(unique, namespace)
+	apiVersion := RuntimePolicyAPIVersion
+	switch parsed.SourceVersion {
+	case SourceVersion:
+		match, ok := runtime.DeepCopyJSONValue(parsed.RawMatch).(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: spec.match is not an object", ErrInvalidRuntimeConstraint)
 		}
-	}
-	if len(unique) == 0 {
-		delete(match, "excludedNamespaces")
-	} else {
-		values := make([]interface{}, len(unique))
-		for i, namespace := range unique {
-			values[i] = namespace
+		mergeConfiguredExclusions(match, parsed.Match.ExcludedNamespaces, configuredExclusions)
+		spec["match"] = match
+	case SubjectSourceVersion:
+		apiVersion = RuntimePolicyAPIVersionV1Alpha2
+		subject, ok := runtime.DeepCopyJSONValue(parsed.RawSubject).(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: spec.match.subject is not an object", ErrInvalidRuntimeConstraint)
 		}
-		match["excludedNamespaces"] = values
+		if parsed.Subject.Kubernetes != nil {
+			kubernetes, ok := subject["kubernetes"].(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("%w: spec.match.subject.kubernetes is not an object", ErrInvalidRuntimeConstraint)
+			}
+			mergeConfiguredExclusions(kubernetes, parsed.Subject.Kubernetes.ExcludedNamespaces, configuredExclusions)
+		}
+		spec["subject"] = subject
+	default:
+		return nil, fmt.Errorf("%w: unsupported source version %q", ErrInvalidRuntimeConstraint, parsed.SourceVersion)
 	}
-	spec["match"] = match
 
 	annotations := map[string]string{
 		sourceAPIVersionAnnotation: constraint.GetAPIVersion(),
@@ -116,7 +132,7 @@ func buildRuntimePolicyWithExclusions(constraint *unstructured.Unstructured, con
 		sourceUIDAnnotation:        string(constraint.GetUID()),
 	}
 	policy := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": RuntimePolicyAPIVersion,
+		"apiVersion": apiVersion,
 		"kind":       RuntimePolicyKind,
 		"metadata": map[string]interface{}{
 			"name":        RuntimePolicyName(constraint),
@@ -125,7 +141,7 @@ func buildRuntimePolicyWithExclusions(constraint *unstructured.Unstructured, con
 		},
 		"spec": spec,
 	}}
-	policy.SetGroupVersionKind(schema.FromAPIVersionAndKind(RuntimePolicyAPIVersion, RuntimePolicyKind))
+	policy.SetGroupVersionKind(schema.FromAPIVersionAndKind(apiVersion, RuntimePolicyKind))
 	if constraint.GetUID() != "" {
 		controller := true
 		blockOwnerDeletion := true
@@ -139,6 +155,27 @@ func buildRuntimePolicyWithExclusions(constraint *unstructured.Unstructured, con
 		}})
 	}
 	return policy, nil
+}
+
+func mergeConfiguredExclusions(into map[string]interface{}, declared, configured []string) {
+	excluded := append([]string(nil), declared...)
+	excluded = append(excluded, configured...)
+	sort.Strings(excluded)
+	unique := excluded[:0]
+	for _, namespace := range excluded {
+		if len(unique) == 0 || unique[len(unique)-1] != namespace {
+			unique = append(unique, namespace)
+		}
+	}
+	if len(unique) == 0 {
+		delete(into, "excludedNamespaces")
+		return
+	}
+	values := make([]interface{}, len(unique))
+	for i, namespace := range unique {
+		values[i] = namespace
+	}
+	into["excludedNamespaces"] = values
 }
 
 // RuntimePolicyName returns the deterministic name of the RuntimePolicy owned
@@ -176,11 +213,15 @@ func sanitizeDNSSubdomain(value string) string {
 	return strings.Trim(b.String(), "-.")
 }
 
-func projectRuntimePolicy(ctx context.Context, writer client.Client, reader client.Reader, constraint *unstructured.Unstructured, configuredExclusions []string) (ProjectionStatus, error) {
-	desired, err := buildRuntimePolicyWithExclusions(constraint, configuredExclusions)
+func projectRuntimePolicyFromParsed(ctx context.Context, writer client.Client, reader client.Reader, constraint *unstructured.Unstructured, parsed *ParsedConstraint, configuredExclusions []string) (ProjectionStatus, error) {
+	desired, err := buildRuntimePolicyFromParsed(constraint, parsed, configuredExclusions)
 	if err != nil {
 		return ProjectionStatus{}, err
 	}
+	return projectDesiredRuntimePolicy(ctx, writer, reader, constraint, desired)
+}
+
+func projectDesiredRuntimePolicy(ctx context.Context, writer client.Client, reader client.Reader, constraint, desired *unstructured.Unstructured) (ProjectionStatus, error) {
 	if writer == nil {
 		return ProjectionStatus{State: ProjectionPending, Message: fmt.Sprintf("validated RuntimePolicy %q (offline; not applied)", desired.GetName())}, nil
 	}
@@ -188,7 +229,7 @@ func projectRuntimePolicy(ctx context.Context, writer client.Client, reader clie
 		reader = writer
 	}
 
-	current := RuntimePolicyWatchObject()
+	current := runtimePolicyWatchObject(desired.GetAPIVersion())
 	key := types.NamespacedName{Name: desired.GetName()}
 	if err := reader.Get(ctx, key, current); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -198,15 +239,12 @@ func projectRuntimePolicy(ctx context.Context, writer client.Client, reader clie
 			if !apierrors.IsAlreadyExists(err) {
 				return ProjectionStatus{}, fmt.Errorf("create RuntimePolicy %q: %w", desired.GetName(), err)
 			}
-			// Multiple Gatekeeper processes can reconcile the same Constraint.
-			// Treat a concurrent create as success, but re-read and verify
-			// ownership before updating or reporting status.
-			current = RuntimePolicyWatchObject()
+			current = runtimePolicyWatchObject(desired.GetAPIVersion())
 			if err := reader.Get(ctx, key, current); err != nil {
 				return ProjectionStatus{}, fmt.Errorf("get concurrently created RuntimePolicy %q: %w", desired.GetName(), err)
 			}
 		} else {
-			return ProjectionStatus{State: ProjectionPending, Message: fmt.Sprintf("created RuntimePolicy %q; awaiting compilation and activation", desired.GetName())}, nil
+			return projectedStatus(desired), nil
 		}
 	}
 	if err := verifyManagedPolicy(current, constraint); err != nil {
@@ -222,19 +260,18 @@ func projectRuntimePolicy(ctx context.Context, writer client.Client, reader clie
 		if err := writer.Update(ctx, updated); err != nil {
 			return ProjectionStatus{}, fmt.Errorf("update RuntimePolicy %q: %w", desired.GetName(), err)
 		}
-		return ProjectionStatus{State: ProjectionPending, Message: fmt.Sprintf("updated RuntimePolicy %q; awaiting compilation and activation", desired.GetName())}, nil
 	}
-	return runtimePolicyStatus(current), nil
+	return projectedStatus(desired), nil
 }
 
-func deleteRuntimePolicy(ctx context.Context, writer client.Client, reader client.Reader, constraint *unstructured.Unstructured) error {
+func deleteRuntimePolicyVersion(ctx context.Context, writer client.Client, reader client.Reader, constraint *unstructured.Unstructured, apiVersion string) error {
 	if writer == nil || constraint == nil {
 		return nil
 	}
 	if reader == nil {
 		reader = writer
 	}
-	current := RuntimePolicyWatchObject()
+	current := runtimePolicyWatchObject(apiVersion)
 	key := types.NamespacedName{Name: RuntimePolicyName(constraint)}
 	if err := reader.Get(ctx, key, current); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -289,46 +326,11 @@ func projectionEqual(left, right *unstructured.Unstructured) bool {
 		reflect.DeepEqual(left.GetOwnerReferences(), right.GetOwnerReferences())
 }
 
-func runtimePolicyStatus(policy *unstructured.Unstructured) ProjectionStatus {
-	name := policy.GetName()
-	observedGeneration, _, _ := unstructured.NestedInt64(policy.Object, "status", "observedGeneration")
-	conditions, _, _ := unstructured.NestedSlice(policy.Object, "status", "conditions")
-	condition := func(wanted string) (string, string, string, bool) {
-		for _, raw := range conditions {
-			entry, ok := raw.(map[string]interface{})
-			if !ok || entry["type"] != wanted {
-				continue
-			}
-			status, _ := entry["status"].(string)
-			reason, _ := entry["reason"].(string)
-			message, _ := entry["message"].(string)
-			return status, reason, message, true
-		}
-		return "", "", "", false
+func projectedStatus(policy *unstructured.Unstructured) ProjectionStatus {
+	return ProjectionStatus{
+		State:   ProjectionProjected,
+		Message: fmt.Sprintf("projected RuntimePolicy %q; compilation, distribution, and workload activation are reported by Gatekeeper Runtime", policy.GetName()),
 	}
-	if status, reason, message, found := condition("Accepted"); found && status == string(metav1.ConditionFalse) && observedGeneration == policy.GetGeneration() {
-		return ProjectionStatus{State: ProjectionError, Message: conditionMessage(name, reason, message)}
-	}
-	if status, reason, message, found := condition("Compiled"); found && status == string(metav1.ConditionFalse) && observedGeneration == policy.GetGeneration() {
-		return ProjectionStatus{State: ProjectionError, Message: conditionMessage(name, reason, message)}
-	}
-	if status, _, message, found := condition("Active"); found && status == string(metav1.ConditionTrue) && observedGeneration == policy.GetGeneration() {
-		if message == "" {
-			message = fmt.Sprintf("RuntimePolicy %q is active", name)
-		}
-		return ProjectionStatus{State: ProjectionActive, Message: message}
-	}
-	return ProjectionStatus{State: ProjectionPending, Message: fmt.Sprintf("RuntimePolicy %q is awaiting compilation and activation", name)}
-}
-
-func conditionMessage(name, reason, message string) string {
-	if message == "" {
-		message = reason
-	}
-	if message == "" {
-		message = "runtime policy reconciliation failed"
-	}
-	return fmt.Sprintf("RuntimePolicy %q: %s", name, message)
 }
 
 func mergeStringMaps(current, desired map[string]string) map[string]string {

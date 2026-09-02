@@ -28,6 +28,16 @@ and the TokenReview/SubjectAccessReview permissions used by the authenticated
 runtime export endpoint. Disabling the feature leaves Gatekeeper's default
 target set and mutation permissions unchanged.
 
+An isolated Gatekeeper runtime-target deployment can use the built-in
+certificate rotator without sharing the primary Gatekeeper TLS Secret. Set
+`--cert-secret-name`, `--cert-service-name`, and
+`--validating-webhook-configuration-name` to the isolated deployment's Secret,
+Service, and `ValidatingWebhookConfiguration`, and mount that same Secret at
+`--cert-dir`. Its service account must be allowed to manage that Secret and to
+`get`, `patch`, and `update` only the named
+`ValidatingWebhookConfiguration`; the default Gatekeeper role is intentionally
+restricted to Gatekeeper's primary webhook configuration.
+
 ## Template contract
 
 A ConstraintTemplate may be runtime-only or may combine the normal admission
@@ -46,6 +56,35 @@ targets:
 Rego, CEL, libraries, admission operations, additional code blocks, unknown
 source fields, and unsupported source versions are rejected. The template must
 also provide an OpenAPI object schema for its parameters.
+
+`v1alpha1` is the legacy flat Kubernetes match contract. It may be used in a
+combined admission/runtime template. `v1alpha2` replaces the flat match with a
+normalized `subject` and projects `runtime.gatekeeper.sh/v1alpha2` resources.
+Because frameworks currently shares one `spec.match` across targets, every
+`v1alpha2` template must be runtime-only. This prevents a Substrate subject from
+looking like an empty, match-all selector to the Kubernetes admission target.
+
+The normalized source is disabled by default. Enable it only after Gatekeeper
+Runtime reports that every eligible controller and agent supports v1alpha2:
+
+```sh
+helm upgrade --install gatekeeper ./charts/gatekeeper \
+  --namespace gatekeeper-system --create-namespace \
+  --set enableRuntimeTarget=true \
+  --set enableRuntimeV1Alpha2Subjects=true
+```
+
+The equivalent Kustomize overlay enables both runtime flags:
+
+```sh
+kubectl apply -k config/runtime-target-v1alpha2
+```
+
+Gatekeeper Runtime's `controller.enableV1Alpha2Subjects` gate must already be
+open. For rollback, stop creating v1alpha2 Constraints, remove or migrate every
+projected v1alpha2 RuntimePolicy, disable the Gatekeeper gate, then roll back
+Gatekeeper Runtime agents and controllers. An old agent must never receive a
+Substrate subject through v1alpha1 conversion.
 
 In a combined template, `admission.k8s.gatekeeper.sh` Rego/CEL is evaluated for
 admission and audit, while `runtime.gatekeeper.sh` is projected to a
@@ -66,15 +105,31 @@ Constraint parameters use the `RuntimePolicy.spec` fields other than `mode` and
   `resourceLimits` are passed through after strict structural and bounded
   semantic validation.
 
+For source version `v1alpha2`, `Constraint.spec.match` must contain only
+`subject`. Exactly one subject kind is required:
+
+- `kubernetes` supports namespace and Pod selectors, excluded namespaces,
+  RuntimeClass names, container types, and optional container names. Gatekeeper
+  Config exclusions are merged only into this subject.
+- `substrate` supports bounded lowercase Atespace names or trailing patterns
+  such as `team-*`, ActorTemplate identity and trusted-label selectors, sandbox
+  classes, and optional container names. A bare wildcard, interior wildcard,
+  Unicode, uppercase, mixed subject kinds, unknown fields, and empty subjects
+  are rejected.
+
 See [the example template](../example/runtime/constrainttemplate.yaml) and
 [constraint](../example/runtime/constraint.yaml). The
+[v1alpha2 runtime-only template](../example/runtime/constrainttemplate-v1alpha2.yaml)
+and [Substrate constraint](../example/runtime/constraint-v1alpha2.yaml) show the
+normalized subject contract. The
 [runtime-only Connection example](../example/runtime/connection.yaml) shows the
 producer-side export configuration.
 
 ## Lifecycle and status
 
 For every accepted runtime Constraint, Gatekeeper creates one deterministic,
-cluster-scoped `runtime.gatekeeper.sh/v1alpha1` `RuntimePolicy`. The policy has a
+cluster-scoped `RuntimePolicy` in the API version selected by the template
+source. The policy has a
 controller owner reference to the Constraint and source-identity annotations.
 Gatekeeper refuses to overwrite a same-named object that it does not own.
 
@@ -82,8 +137,10 @@ Projection is reconciled on every Constraint reconciliation, so a temporary API
 failure is retried even after the constraint framework has cached the
 Constraint. RuntimePolicy status changes requeue the owning Constraint. The
 Constraint pod status exposes the `runtime.gatekeeper.sh` enforcement point as
-`Pending`, `Active`, or `Error`, while the RuntimePolicy remains the detailed
-source of compiler, distribution, node activation, and enforcement status.
+`Pending`, `Projected`, or `Error`. `Projected` means Gatekeeper wrote the
+authoring handoff. It does not mean the policy compiled, reached a node, or
+activated for a workload. Gatekeeper Runtime owns those states, and Pod or
+Actor conditions own workload readiness.
 
 Updating a Constraint updates its RuntimePolicy. Deleting the Constraint or its
 template deletes the projected policy; the runtime controller's finalizer still
@@ -93,10 +150,11 @@ controls safe policy withdrawal from nodes.
 
 The runtime projection consumes Gatekeeper `Config.spec.match` entries whose
 `processes` include `runtime` or `*`. Matching namespace exclusions are merged
-with the Constraint's own `excludedNamespaces` before Gatekeeper writes the
-RuntimePolicy. Config reconciliation immediately refreshes existing projections,
-so the standalone runtime controller and agents do not need permission to read
-Gatekeeper Config resources.
+with the legacy match or a v1alpha2 Kubernetes subject before Gatekeeper writes
+the RuntimePolicy. They never apply to Substrate Atespaces. Config
+reconciliation immediately refreshes existing projections, so the standalone
+runtime controller and agents do not need permission to read Gatekeeper Config
+resources.
 
 ## Connection export
 
@@ -123,6 +181,12 @@ spec:
     path: /tmp/violations/topics
     maxAuditResults: 3
 ```
+
+On managed Kubernetes distributions that own an older Gatekeeper Connection
+CRD and prune `spec.sources`, annotate the otherwise dedicated Connection with
+`runtime.gatekeeper.sh/connection-source: runtime`. The annotation is a
+fail-closed compatibility fallback: Gatekeeper considers it only when
+`spec.sources` is absent, and any explicit source list remains authoritative.
 
 The runtime agent reads Gatekeeper's serving CA from the configured
 `ValidatingWebhookConfiguration`, uses its rotating service-account token, and
