@@ -6,15 +6,17 @@ spec:
   # deny projects mode: Enforce; dryrun projects mode: Monitor.
   enforcementAction: deny
   match:
-    namespaceSelector:
-      matchLabels:
-        environment: production
-    podSelector:
-      matchLabels:
-        runtime-policy: restricted-shells
-    containerTypes:
-    - Application
-    - Init
+    subject:
+      kubernetes:
+        namespaceSelector:
+          matchLabels:
+            environment: production
+        podSelector:
+          matchLabels:
+            runtime-policy: restricted-shells
+        containerTypes:
+        - Application
+        - Init
   parameters:
     failurePolicy: FailOpen
     behaviors:

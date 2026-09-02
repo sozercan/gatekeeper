@@ -260,14 +260,8 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 		}
 	}
 	if runtimeProjector != nil {
-		watchObjects := []client.Object{runtimeProjector.RuntimePolicyWatchObject()}
-		if multiVersion, ok := runtimeProjector.(runtimepolicy.MultiVersionProjector); ok {
-			watchObjects = multiVersion.RuntimePolicyWatchObjects()
-		}
-		for _, object := range watchObjects {
-			if err = c.Watch(source.Kind(mgr.GetCache(), object, handler.TypedEnqueueRequestsFromMapFunc(eventPackerMapFuncFromOwnerRefs()))); err != nil {
-				return err
-			}
+		if err = c.Watch(source.Kind(mgr.GetCache(), runtimeProjector.RuntimePolicyWatchObject(), handler.TypedEnqueueRequestsFromMapFunc(eventPackerMapFuncFromOwnerRefs()))); err != nil {
+			return err
 		}
 	}
 	return nil

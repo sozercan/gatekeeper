@@ -164,10 +164,6 @@ func matchSchema() apiextensions.JSONSchemaProps {
 	return apiextensions.JSONSchemaProps{
 		Type: "object",
 		Properties: map[string]apiextensions.JSONSchemaProps{
-			namespaceSelectorProperty:  selector,
-			podSelectorProperty:        selector,
-			containerTypesProperty:     containerTypes,
-			excludedNamespacesProperty: excludedNamespaces,
 			"subject": {
 				Type: "object",
 				Properties: map[string]apiextensions.JSONSchemaProps{

@@ -22,12 +22,7 @@ import (
 	"testing"
 
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
-	regoschema "github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego/schema"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/reviews"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
-	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,7 +73,7 @@ func TestValidateTemplateRejectsExecutableSources(t *testing.T) {
 func TestRuntimeTargetCreatesConstraintCRD(t *testing.T) {
 	driver := NewOfflineDriver()
 	client, err := constraintclient.NewClient(
-		constraintclient.Targets(&Target{}),
+		constraintclient.Targets(NewTarget(driver)),
 		constraintclient.Driver(driver),
 		constraintclient.EnforcementPoints("gator.gatekeeper.sh"),
 	)
@@ -93,107 +88,13 @@ func TestRuntimeTargetCreatesConstraintCRD(t *testing.T) {
 	}
 }
 
-func TestCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		reverse bool
-	}{
-		{name: "admission then runtime"},
-		{name: "runtime then admission", reverse: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			testCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t, test.reverse)
-		})
-	}
-}
-
-func testCombinedTemplateEvaluatesAdmissionAndAuditAndProjectsRuntime(t *testing.T, reverse bool) {
-	ctx := context.Background()
-	kube := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
-	runtimeDriver := NewDriver(kube, kube)
-	regoDriver, err := rego.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := constraintclient.NewClient(
-		constraintclient.Targets(&target.K8sValidationTarget{}, &Target{}),
-		constraintclient.Driver(regoDriver),
-		constraintclient.Driver(runtimeDriver),
-		constraintclient.EnforcementPoints(util.WebhookEnforcementPoint, util.AuditEnforcementPoint),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := combinedRuntimeTemplate()
-	if reverse {
-		template.Spec.Targets[0], template.Spec.Targets[1] = template.Spec.Targets[1], template.Spec.Targets[0]
-	}
-	if _, err := client.AddTemplate(ctx, template); err != nil {
-		t.Fatalf("AddTemplate(combined) error = %v", err)
-	}
-
-	constraint := runtimeConstraint("deny")
-	if err := unstructured.SetNestedMap(constraint.Object, map[string]interface{}{
-		"kinds": []interface{}{map[string]interface{}{
-			"apiGroups": []interface{}{string("")},
-			"kinds":     []interface{}{"Pod"},
-		}},
-		"labelSelector": map[string]interface{}{
-			"matchLabels": map[string]interface{}{"runtime-policy": "restricted"},
-		},
-		"excludedNamespaces": []interface{}{"kube-*"},
-		"containerTypes":     []interface{}{"Application"},
-	}, "spec", "match"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.AddConstraint(ctx, constraint); err != nil {
-		t.Fatalf("AddConstraint(combined) error = %v", err)
-	}
-
-	pod := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       "Pod",
-		"metadata": map[string]interface{}{
-			"name":      "workload",
-			"namespace": "production",
-			"labels":    map[string]interface{}{"runtime-policy": "restricted"},
-		},
-	}}
-	pod.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
-	for _, enforcementPoint := range []string{util.WebhookEnforcementPoint, util.AuditEnforcementPoint} {
-		response, err := client.Review(ctx, pod, reviews.EnforcementPoint(enforcementPoint))
-		if err != nil {
-			t.Fatalf("Review(%s) error = %v", enforcementPoint, err)
-		}
-		if results := response.Results(); len(results) != 1 || results[0].Msg != "admission denied" {
-			t.Fatalf("Review(%s) results = %#v", enforcementPoint, results)
-		}
-	}
-
-	projection, handled, err := runtimeDriver.ReconcileConstraint(ctx, constraint)
-	if err != nil || !handled || projection.State != ProjectionProjected {
-		t.Fatalf("ReconcileConstraint() = %#v, handled %v, err %v", projection, handled, err)
-	}
-	policy := RuntimePolicyWatchObject()
-	if err := kube.Get(ctx, types.NamespacedName{Name: RuntimePolicyName(constraint)}, policy); err != nil {
-		t.Fatal(err)
-	}
-	podSelector, found, err := unstructured.NestedStringMap(policy.Object, "spec", "match", "podSelector", "matchLabels")
-	if err != nil || !found || podSelector["runtime-policy"] != "restricted" {
-		t.Fatalf("projected pod selector = %v, found %v, err %v", podSelector, found, err)
-	}
-	if _, found, err := unstructured.NestedFieldNoCopy(policy.Object, "spec", "match", "kinds"); err != nil || found {
-		t.Fatalf("admission-only kinds leaked into RuntimePolicy: found %v, err %v", found, err)
-	}
-}
-
 func TestParseConstraintMapsEnforcementAndRejectsUnknownPolicyFields(t *testing.T) {
 	constraint := runtimeConstraint("dryrun")
 	parsed, err := ParseConstraint(constraint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Mode != "Monitor" {
+	if parsed.Mode != runtimePolicyModeMonitor {
 		t.Fatalf("mode = %q, want Monitor", parsed.Mode)
 	}
 
@@ -334,6 +235,138 @@ func TestValidateParametersAcceptsDynamicSourcePortBudget(t *testing.T) {
 	}
 }
 
+func TestParseConstraintAcceptsCurrentV1Alpha1Fields(t *testing.T) {
+	constraint := runtimeConstraint("dryrun")
+	parameters := map[string]interface{}{
+		"failurePolicy": "FailOpen",
+		"behaviors": map[string]interface{}{
+			"network": map[string]interface{}{},
+			"protocol": map[string]interface{}{
+				"defaultAction": "Allow",
+				"rules": []interface{}{
+					map[string]interface{}{"protocol": "DNS", "action": "Deny"},
+				},
+			},
+		},
+		"monitorFilter": map[string]interface{}{
+			"expressions": []interface{}{
+				map[string]interface{}{"name": "dns-only", "expression": "has(event.dns)"},
+			},
+		},
+		"dynamicSources": []interface{}{
+			map[string]interface{}{
+				"name":        "blocked-domains",
+				"outputType":  "Domain",
+				"jsonPointer": "/items",
+				"projection": map[string]interface{}{
+					"action": "Deny", "protocols": []interface{}{"TCP"},
+				},
+				"httpRef": map[string]interface{}{
+					"url": "https://policy.example.test/domains.json", "ttlSeconds": int64(300),
+				},
+			},
+		},
+	}
+	if err := unstructured.SetNestedMap(constraint.Object, parameters, "spec", "parameters"); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := ParseConstraint(constraint)
+	if err != nil {
+		t.Fatalf("ParseConstraint() error = %v", err)
+	}
+	policy, err := buildRuntimePolicyFromParsed(constraint, parsed, nil)
+	if err != nil {
+		t.Fatalf("buildRuntimePolicyFromParsed() error = %v", err)
+	}
+	rules, found, err := unstructured.NestedSlice(policy.Object, "spec", "behaviors", "protocol", "rules")
+	if err != nil || !found || len(rules) != 1 {
+		t.Fatalf("protocol rules = %#v, found %v, err %v", rules, found, err)
+	}
+	rule, ok := rules[0].(map[string]interface{})
+	if !ok || rule["protocol"] != "DNS" {
+		t.Fatalf("protocol rules = %#v", rules)
+	}
+	filter, found, err := unstructured.NestedSlice(policy.Object, "spec", "monitorFilter", "expressions")
+	if err != nil || !found || len(filter) != 1 {
+		t.Fatalf("monitor filter = %#v, found %v, err %v", filter, found, err)
+	}
+	sources, found, err := unstructured.NestedSlice(policy.Object, "spec", "dynamicSources")
+	if err != nil || !found || len(sources) != 1 {
+		t.Fatalf("dynamic sources = %#v, found %v, err %v", sources, found, err)
+	}
+	source, ok := sources[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dynamic source = %#v", sources[0])
+	}
+	httpRef, ok := source["httpRef"].(map[string]interface{})
+	if !ok || httpRef["url"] != "https://policy.example.test/domains.json" || source["jsonPointer"] != "/items" {
+		t.Fatalf("dynamic source = %#v", source)
+	}
+}
+
+func TestValidateParametersRejectsInvalidCurrentV1Alpha1Fields(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		parameters Parameters
+		want       string
+	}{
+		{
+			name: "monitor filter in enforce mode",
+			mode: runtimePolicyModeEnforce,
+			parameters: Parameters{
+				Behaviors:     Behaviors{Process: &ProcessBehavior{}},
+				MonitorFilter: &MonitorFilter{Expressions: []MonitorFilterExpression{{Name: "exec", Expression: "has(event.exec)"}}},
+			},
+			want: "only with enforcementAction dryrun",
+		},
+		{
+			name: "duplicate protocol rule",
+			mode: runtimePolicyModeMonitor,
+			parameters: Parameters{Behaviors: Behaviors{Protocol: &ApplicationProtocolBehavior{Rules: []ApplicationProtocolRule{
+				{Protocol: "DNS", Action: "Deny"}, {Protocol: "DNS", Action: "Allow"},
+			}}}},
+			want: "duplicates",
+		},
+		{
+			name: "HTTP source credentials",
+			mode: runtimePolicyModeMonitor,
+			parameters: Parameters{
+				Behaviors: Behaviors{Network: &NetworkBehavior{}},
+				DynamicSources: []DynamicSource{{
+					Name: "domains", OutputType: "Domain",
+					Projection: DynamicProjection{Action: "Deny", Protocols: []string{"TCP"}},
+					HTTPRef:    &HTTPJSONReference{URL: "https://user:secret@example.test/domains.json"},
+				}},
+			},
+			want: "must not contain credentials",
+		},
+		{
+			name: "JSON pointer on CEL source",
+			mode: runtimePolicyModeMonitor,
+			parameters: Parameters{
+				Behaviors: Behaviors{Process: &ProcessBehavior{}},
+				DynamicSources: []DynamicSource{{
+					Name: "tools", OutputType: "Executable", JSONPointer: "/items",
+					Projection: DynamicProjection{Action: "Deny"},
+					CEL:        &CELSource{Expression: "[]"},
+				}},
+			},
+			want: "applies only to configMapRef or httpRef",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateParameters(test.mode, &test.parameters)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateParameters() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestDriverProjectsUpdatesReportsAndDeletesRuntimePolicy(t *testing.T) {
 	ctx := context.Background()
 	kube := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
@@ -446,7 +479,7 @@ func TestDriverRefreshConfigUpdatesProjectedExclusions(t *testing.T) {
 		if err := kube.Get(ctx, types.NamespacedName{Name: RuntimePolicyName(constraint)}, policy); err != nil {
 			t.Fatal(err)
 		}
-		got, found, err := unstructured.NestedStringSlice(policy.Object, "spec", "match", "excludedNamespaces")
+		got, found, err := unstructured.NestedStringSlice(policy.Object, "spec", "subject", "kubernetes", "excludedNamespaces")
 		if err != nil || !found {
 			t.Fatalf("projected exclusions = %v, found %v, err %v", got, found, err)
 		}
@@ -576,20 +609,7 @@ func runtimeTemplate() *templates.ConstraintTemplate {
 
 func combinedRuntimeTemplate() *templates.ConstraintTemplate {
 	template := runtimeTemplate()
-	admission := templates.Target{
-		Target: target.Name,
-		Code: []templates.Code{{
-			Engine: regoschema.Name,
-			Source: &templates.Anything{Value: (&regoschema.Source{
-				Version: "v1",
-				Rego: `package runtimeprocess
-
-violation contains {"msg": "admission denied"} if {
-	input.review.kind.kind == "Pod"
-}`,
-			}).ToUnstructured()},
-		}},
-	}
+	admission := templates.Target{Target: "admission.k8s.gatekeeper.sh"}
 	template.Spec.Targets = append([]templates.Target{admission}, template.Spec.Targets...)
 	return template
 }
@@ -604,8 +624,12 @@ func runtimeConstraint(enforcementAction string) *unstructured.Unstructured {
 		"spec": map[string]interface{}{
 			"enforcementAction": enforcementAction,
 			"match": map[string]interface{}{
-				"namespaceSelector": map[string]interface{}{"matchLabels": map[string]interface{}{"environment": "production"}},
-				"containerTypes":    []interface{}{"Application"},
+				"subject": map[string]interface{}{
+					"kubernetes": map[string]interface{}{
+						"namespaceSelector": map[string]interface{}{"matchLabels": map[string]interface{}{"environment": "production"}},
+						"containerTypes":    []interface{}{"Application"},
+					},
+				},
 			},
 			"parameters": map[string]interface{}{
 				"failurePolicy": "FailOpen",
@@ -632,7 +656,7 @@ func TestProjectionCollisionFailsClosed(t *testing.T) {
 	constraint := runtimeConstraint("deny")
 	collision := RuntimePolicyWatchObject()
 	collision.SetName(RuntimePolicyName(constraint))
-	collision.Object["spec"] = map[string]interface{}{"mode": "Monitor"}
+	collision.Object["spec"] = map[string]interface{}{"mode": runtimePolicyModeMonitor}
 	kube := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(collision).Build()
 	driver := NewDriver(kube, kube)
 	if err := driver.AddTemplate(ctx, runtimeTemplate()); err != nil {

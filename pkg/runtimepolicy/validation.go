@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	pathpkg "path"
 	"regexp"
 	"strings"
@@ -46,10 +47,8 @@ const (
 type ParsedConstraint struct {
 	SourceVersion string
 	Mode          string
-	Match         Match
 	Subject       PolicySubject
 	Parameters    Parameters
-	RawMatch      map[string]interface{}
 	RawSubject    map[string]interface{}
 	RawParameters map[string]interface{}
 }
@@ -61,12 +60,14 @@ func ParseConstraint(constraint *unstructured.Unstructured) (*ParsedConstraint, 
 	return ParseConstraintForSource(constraint, SourceVersion)
 }
 
-// ParseConstraintForSource validates a Constraint against one declared runtime
-// target source version. v1alpha1 accepts only the legacy flat Kubernetes
-// match. v1alpha2 accepts only the normalized one-of subject.
+// ParseConstraintForSource validates a Constraint against the declared runtime
+// target source version.
 func ParseConstraintForSource(constraint *unstructured.Unstructured, version string) (*ParsedConstraint, error) {
 	if constraint == nil {
 		return nil, fmt.Errorf("%w: object is required", ErrInvalidRuntimeConstraint)
+	}
+	if version != SourceVersion {
+		return nil, fmt.Errorf("%w: unsupported source version %q", ErrInvalidRuntimeConstraint, version)
 	}
 
 	enforcementAction, err := util.GetEnforcementAction(constraint.Object)
@@ -78,7 +79,7 @@ func ParseConstraintForSource(constraint *unstructured.Unstructured, version str
 	case util.Deny:
 		mode = runtimePolicyModeEnforce
 	case util.Dryrun:
-		mode = "Monitor"
+		mode = runtimePolicyModeMonitor
 	case util.Warn:
 		return nil, fmt.Errorf("%w: enforcementAction %q has no synchronous runtime-warning semantics; use %q", ErrInvalidRuntimeConstraint, enforcementAction, util.Dryrun)
 	case util.Scoped:
@@ -94,28 +95,12 @@ func ParseConstraintForSource(constraint *unstructured.Unstructured, version str
 	if !found {
 		rawMatch = map[string]interface{}{}
 	}
-	var match Match
-	var subject PolicySubject
-	var normalizedMatch, normalizedSubject map[string]interface{}
-	switch version {
-	case SourceVersion:
-		match, normalizedMatch, err = decodeRuntimeMatch(rawMatch)
-		if err != nil {
-			return nil, fmt.Errorf("%w: spec.match: %w", ErrInvalidRuntimeConstraint, err)
-		}
-		if err := validateMatch(&match); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
-		}
-	case SubjectSourceVersion:
-		subject, normalizedSubject, err = decodeRuntimeSubject(rawMatch)
-		if err != nil {
-			return nil, fmt.Errorf("%w: spec.match: %w", ErrInvalidRuntimeConstraint, err)
-		}
-		if err := validateSubject(&subject); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
-		}
-	default:
-		return nil, fmt.Errorf("%w: unsupported source version %q", ErrInvalidRuntimeConstraint, version)
+	subject, normalizedSubject, err := decodeRuntimeSubject(rawMatch)
+	if err != nil {
+		return nil, fmt.Errorf("%w: spec.match: %w", ErrInvalidRuntimeConstraint, err)
+	}
+	if err := validateSubject(&subject); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
 	}
 
 	rawParameters, found, err := unstructured.NestedMap(constraint.Object, "spec", "parameters")
@@ -136,10 +121,8 @@ func ParseConstraintForSource(constraint *unstructured.Unstructured, version str
 	return &ParsedConstraint{
 		SourceVersion: version,
 		Mode:          mode,
-		Match:         match,
 		Subject:       subject,
 		Parameters:    parameters,
-		RawMatch:      normalizedMatch,
 		RawSubject:    normalizedSubject,
 		RawParameters: rawParameters,
 	}, nil
@@ -148,9 +131,9 @@ func ParseConstraintForSource(constraint *unstructured.Unstructured, version str
 func decodeRuntimeSubject(raw map[string]interface{}) (PolicySubject, map[string]interface{}, error) {
 	if len(raw) != 1 {
 		if _, hasSubject := raw["subject"]; hasSubject {
-			return PolicySubject{}, nil, errors.New("normalized subject cannot be combined with legacy or admission match fields")
+			return PolicySubject{}, nil, errors.New("subject cannot be combined with other match fields")
 		}
-		return PolicySubject{}, nil, errors.New("source version v1alpha2 requires spec.match.subject")
+		return PolicySubject{}, nil, fmt.Errorf("source version %s requires spec.match.subject", SourceVersion)
 	}
 	rawSubject, ok := raw["subject"].(map[string]interface{})
 	if !ok {
@@ -165,118 +148,6 @@ func decodeRuntimeSubject(raw map[string]interface{}) (PolicySubject, map[string
 		return PolicySubject{}, nil, fmt.Errorf("normalize subject: %w", err)
 	}
 	return subject, normalized, nil
-}
-
-func decodeRuntimeMatch(raw map[string]interface{}) (Match, map[string]interface{}, error) {
-	admissionOnlyFields := map[string]struct{}{
-		"kinds": {}, "scope": {}, "namespaces": {}, "name": {}, "source": {},
-	}
-	runtimeFields := map[string]struct{}{
-		"namespaceSelector": {}, "podSelector": {}, "containerTypes": {}, "excludedNamespaces": {},
-	}
-	normalized := make(map[string]interface{})
-	for key, value := range raw {
-		if _, found := runtimeFields[key]; found {
-			normalized[key] = value
-			continue
-		}
-		if key == "labelSelector" {
-			if _, hasPodSelector := raw["podSelector"]; !hasPodSelector {
-				normalized["podSelector"] = value
-			}
-			continue
-		}
-		if _, found := admissionOnlyFields[key]; found {
-			continue
-		}
-		return Match{}, nil, fmt.Errorf("unknown field %q", key)
-	}
-
-	var match Match
-	if err := decodeStrict(normalized, &match); err != nil {
-		return Match{}, nil, err
-	}
-	encoded, err := json.Marshal(match)
-	if err != nil {
-		return Match{}, nil, fmt.Errorf("encode normalized match: %w", err)
-	}
-	normalized = make(map[string]interface{})
-	if err := json.Unmarshal(encoded, &normalized); err != nil {
-		return Match{}, nil, fmt.Errorf("decode normalized match: %w", err)
-	}
-	return match, normalized, nil
-}
-
-func validateMatch(match *Match) error {
-	if len(match.NamespaceSelector.MatchExpressions) > 64 {
-		return fmt.Errorf("spec.match.namespaceSelector.matchExpressions has %d entries; maximum is 64", len(match.NamespaceSelector.MatchExpressions))
-	}
-	if len(match.PodSelector.MatchExpressions) > 64 {
-		return fmt.Errorf("spec.match.podSelector.matchExpressions has %d entries; maximum is 64", len(match.PodSelector.MatchExpressions))
-	}
-	for field, selector := range map[string]metav1.LabelSelector{
-		"spec.match.namespaceSelector": match.NamespaceSelector,
-		"spec.match.podSelector":       match.PodSelector,
-	} {
-		for i, expression := range selector.MatchExpressions {
-			if len(expression.Values) > 256 {
-				return fmt.Errorf("%s.matchExpressions[%d].values has %d entries; maximum is 256", field, i, len(expression.Values))
-			}
-		}
-		if _, err := metav1.LabelSelectorAsSelector(&selector); err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-	}
-	if len(match.ContainerTypes) > 3 {
-		return fmt.Errorf("spec.match.containerTypes has %d entries; maximum is 3", len(match.ContainerTypes))
-	}
-	seen := make(map[string]struct{}, len(match.ContainerTypes))
-	for i, containerType := range match.ContainerTypes {
-		switch containerType {
-		case "Application", "Init", "Ephemeral":
-		default:
-			return fmt.Errorf("spec.match.containerTypes[%d] has unsupported value %q", i, containerType)
-		}
-		if _, found := seen[containerType]; found {
-			return fmt.Errorf("spec.match.containerTypes[%d] duplicates %q", i, containerType)
-		}
-		seen[containerType] = struct{}{}
-	}
-	if len(match.ExcludedNamespaces) > 256 {
-		return fmt.Errorf("spec.match.excludedNamespaces has %d entries; maximum is 256", len(match.ExcludedNamespaces))
-	}
-	seenNamespaces := make(map[string]struct{}, len(match.ExcludedNamespaces))
-	for i, namespace := range match.ExcludedNamespaces {
-		if len(namespace) > 253 || !namespaceExclusionPattern.MatchString(namespace) {
-			return fmt.Errorf("spec.match.excludedNamespaces[%d] must be an exact namespace or a prefix/suffix wildcard", i)
-		}
-		if _, found := seenNamespaces[namespace]; found {
-			return fmt.Errorf("spec.match.excludedNamespaces[%d] duplicates %q", i, namespace)
-		}
-		seenNamespaces[namespace] = struct{}{}
-	}
-	return nil
-}
-
-// NormalizeLegacyKubernetesSubject converts the v1alpha1 flat match to the
-// v1alpha2 Kubernetes subject without changing legacy matching semantics.
-func NormalizeLegacyKubernetesSubject(match *Match) (PolicySubject, error) {
-	if match == nil {
-		return PolicySubject{}, errors.New("legacy Kubernetes match is required")
-	}
-	if err := validateMatch(match); err != nil {
-		return PolicySubject{}, err
-	}
-	containerTypes := append([]string(nil), match.ContainerTypes...)
-	if len(containerTypes) == 0 {
-		containerTypes = []string{"Application", "Init", "Ephemeral"}
-	}
-	return PolicySubject{Kubernetes: &KubernetesSubject{
-		NamespaceSelector:  *match.NamespaceSelector.DeepCopy(),
-		PodSelector:        *match.PodSelector.DeepCopy(),
-		ExcludedNamespaces: append([]string(nil), match.ExcludedNamespaces...),
-		ContainerTypes:     containerTypes,
-	}}, nil
 }
 
 func validateSubject(subject *PolicySubject) error {
@@ -305,12 +176,41 @@ func validateKubernetesSubject(subject *KubernetesSubject) error {
 		len(subject.ContainerTypes) == 0 && len(subject.ContainerNames) == 0 {
 		return errors.New("spec.match.subject.kubernetes must contain at least one selector")
 	}
-	legacy := Match{
-		NamespaceSelector: subject.NamespaceSelector, PodSelector: subject.PodSelector,
-		ContainerTypes: subject.ContainerTypes, ExcludedNamespaces: subject.ExcludedNamespaces,
+	for field, selector := range map[string]metav1.LabelSelector{
+		"spec.match.subject.kubernetes.namespaceSelector": subject.NamespaceSelector,
+		"spec.match.subject.kubernetes.podSelector":       subject.PodSelector,
+	} {
+		if err := validateBoundedLabelSelector(field, selector); err != nil {
+			return err
+		}
 	}
-	if err := validateMatch(&legacy); err != nil {
-		return err
+	if len(subject.ContainerTypes) > 3 {
+		return fmt.Errorf("spec.match.subject.kubernetes.containerTypes has %d entries; maximum is 3", len(subject.ContainerTypes))
+	}
+	seenTypes := make(map[string]struct{}, len(subject.ContainerTypes))
+	for i, containerType := range subject.ContainerTypes {
+		switch containerType {
+		case "Application", "Init", "Ephemeral":
+		default:
+			return fmt.Errorf("spec.match.subject.kubernetes.containerTypes[%d] has unsupported value %q", i, containerType)
+		}
+		if _, found := seenTypes[containerType]; found {
+			return fmt.Errorf("spec.match.subject.kubernetes.containerTypes[%d] duplicates %q", i, containerType)
+		}
+		seenTypes[containerType] = struct{}{}
+	}
+	if len(subject.ExcludedNamespaces) > 256 {
+		return fmt.Errorf("spec.match.subject.kubernetes.excludedNamespaces has %d entries; maximum is 256", len(subject.ExcludedNamespaces))
+	}
+	seenNamespaces := make(map[string]struct{}, len(subject.ExcludedNamespaces))
+	for i, namespace := range subject.ExcludedNamespaces {
+		if len(namespace) > 253 || !namespaceExclusionPattern.MatchString(namespace) {
+			return fmt.Errorf("spec.match.subject.kubernetes.excludedNamespaces[%d] must be an exact namespace or a prefix/suffix wildcard", i)
+		}
+		if _, found := seenNamespaces[namespace]; found {
+			return fmt.Errorf("spec.match.subject.kubernetes.excludedNamespaces[%d] duplicates %q", i, namespace)
+		}
+		seenNamespaces[namespace] = struct{}{}
 	}
 	if err := validateDNSNames("spec.match.subject.kubernetes.runtimeClassNames", subject.RuntimeClassNames, utilvalidation.IsDNS1123Subdomain); err != nil {
 		return err
@@ -442,10 +342,32 @@ func validateParameters(mode string, parameters *Parameters) error {
 	default:
 		return fmt.Errorf("spec.parameters.failurePolicy has unsupported value %q", parameters.FailurePolicy)
 	}
+	if filter := parameters.MonitorFilter; filter != nil {
+		if mode != runtimePolicyModeMonitor {
+			return errors.New("spec.parameters.monitorFilter is supported only with enforcementAction dryrun")
+		}
+		if len(filter.Expressions) == 0 || len(filter.Expressions) > 64 {
+			return errors.New("spec.parameters.monitorFilter.expressions must contain between 1 and 64 entries")
+		}
+		seen := make(map[string]struct{}, len(filter.Expressions))
+		for i, expression := range filter.Expressions {
+			field := fmt.Sprintf("spec.parameters.monitorFilter.expressions[%d]", i)
+			if expression.Name == "" || len(expression.Name) > 128 || !utf8.ValidString(expression.Name) {
+				return fmt.Errorf("%s.name must contain 1 to 128 bytes of valid UTF-8", field)
+			}
+			if _, found := seen[expression.Name]; found {
+				return fmt.Errorf("%s.name duplicates %q", field, expression.Name)
+			}
+			seen[expression.Name] = struct{}{}
+			if expression.Expression == "" || len(expression.Expression) > 16<<10 || !utf8.ValidString(expression.Expression) {
+				return fmt.Errorf("%s.expression must contain 1 to 16384 bytes of valid UTF-8", field)
+			}
+		}
+	}
 
 	behaviors := parameters.Behaviors
-	if behaviors.Process == nil && behaviors.File == nil && behaviors.Network == nil && behaviors.Observation == nil {
-		return errors.New("spec.parameters.behaviors must define process, file, network, or observation")
+	if behaviors.Process == nil && behaviors.File == nil && behaviors.Network == nil && behaviors.Protocol == nil && behaviors.Observation == nil {
+		return errors.New("spec.parameters.behaviors must define process, file, network, protocol, or observation")
 	}
 
 	totalRules := 0
@@ -497,6 +419,10 @@ func validateParameters(mode string, parameters *Parameters) error {
 		if err := validateAction("spec.parameters.behaviors.network.defaultAction", behavior.DefaultAction, true); err != nil {
 			return err
 		}
+		networkRules := len(behavior.Destinations) + len(behavior.Services) + len(behavior.Domains)
+		if networkRules > 4096 {
+			return fmt.Errorf("spec.parameters.behaviors.network has %d entries; maximum is 4096", networkRules)
+		}
 		if len(behavior.Destinations) > 4096 {
 			return fmt.Errorf("spec.parameters.behaviors.network.destinations has %d entries; maximum is 4096", len(behavior.Destinations))
 		}
@@ -506,7 +432,7 @@ func validateParameters(mode string, parameters *Parameters) error {
 		if len(behavior.Domains) > 512 {
 			return fmt.Errorf("spec.parameters.behaviors.network.domains has %d entries; maximum is 512", len(behavior.Domains))
 		}
-		totalRules += len(behavior.Destinations) + len(behavior.Services) + len(behavior.Domains)
+		totalRules += networkRules
 		for i, rule := range behavior.Destinations {
 			field := fmt.Sprintf("spec.parameters.behaviors.network.destinations[%d]", i)
 			if err := validateDestination(field+".cidr", rule.CIDR); err != nil {
@@ -542,9 +468,35 @@ func validateParameters(mode string, parameters *Parameters) error {
 		}
 	}
 
+	if behavior := behaviors.Protocol; behavior != nil {
+		if err := validateAction("spec.parameters.behaviors.protocol.defaultAction", behavior.DefaultAction, true); err != nil {
+			return err
+		}
+		if len(behavior.Rules) > 4 {
+			return fmt.Errorf("spec.parameters.behaviors.protocol.rules has %d entries; maximum is 4", len(behavior.Rules))
+		}
+		totalRules += len(behavior.Rules)
+		seen := make(map[string]struct{}, len(behavior.Rules))
+		for i, rule := range behavior.Rules {
+			field := fmt.Sprintf("spec.parameters.behaviors.protocol.rules[%d]", i)
+			switch rule.Protocol {
+			case "DNS", "HTTP", "TLS", "SSH":
+			default:
+				return fmt.Errorf("%s.protocol has unsupported value %q", field, rule.Protocol)
+			}
+			if _, found := seen[rule.Protocol]; found {
+				return fmt.Errorf("%s.protocol duplicates %q", field, rule.Protocol)
+			}
+			seen[rule.Protocol] = struct{}{}
+			if err := validateAction(field+".action", rule.Action, false); err != nil {
+				return err
+			}
+		}
+	}
+
 	if behavior := behaviors.Observation; behavior != nil {
 		argumentsEnabled := behavior.Arguments != nil && behavior.Arguments.Enabled
-		if !behavior.DNS && len(behavior.Protocols) == 0 && !argumentsEnabled {
+		if !behavior.DNS && len(behavior.Protocols) == 0 && !argumentsEnabled && parameters.MonitorFilter == nil {
 			return errors.New("spec.parameters.behaviors.observation must enable DNS, arguments, or an application protocol")
 		}
 		if err := validateSet("spec.parameters.behaviors.observation.protocols", behavior.Protocols, 3, "HTTP", "TLS", "SSH"); err != nil {
@@ -715,6 +667,15 @@ func validateDynamicSources(sources []DynamicSource, behaviors Behaviors) error 
 				return fmt.Errorf("%s.configMapRef.key must contain 1 to 253 characters", field)
 			}
 		}
+		if ref := source.HTTPRef; ref != nil {
+			references++
+			if err := validateHTTPSourceURL(ref.URL); err != nil {
+				return fmt.Errorf("%s.httpRef.url: %w", field, err)
+			}
+			if ref.TTLSeconds < 0 || ref.TTLSeconds > 86400 {
+				return fmt.Errorf("%s.httpRef.ttlSeconds must be between 0 and 86400", field)
+			}
+		}
 		if ref := source.ExternalProviderRef; ref != nil {
 			references++
 			if ref.APIVersion == "" || len(ref.APIVersion) > 253 {
@@ -756,7 +717,15 @@ func validateDynamicSources(sources []DynamicSource, behaviors Behaviors) error 
 			}
 		}
 		if references != 1 {
-			return fmt.Errorf("%s must set exactly one of configMapRef, externalProviderRef, or cel", field)
+			return fmt.Errorf("%s must set exactly one of configMapRef, httpRef, externalProviderRef, or cel", field)
+		}
+		if source.JSONPointer != "" {
+			if source.ConfigMapRef == nil && source.HTTPRef == nil {
+				return fmt.Errorf("%s.jsonPointer applies only to configMapRef or httpRef", field)
+			}
+			if err := validateJSONPointer(source.JSONPointer); err != nil {
+				return fmt.Errorf("%s.jsonPointer: %w", field, err)
+			}
 		}
 
 		if err := validateDynamicProjection(field, source, behaviors); err != nil {
@@ -923,6 +892,63 @@ func validateDomain(field, value string) error {
 	}
 	if errs := utilvalidation.IsDNS1123Subdomain(value); len(errs) != 0 {
 		return fmt.Errorf("%s: %s", field, strings.Join(errs, ", "))
+	}
+	return nil
+}
+
+func validateHTTPSourceURL(raw string) error {
+	if raw == "" {
+		return errors.New("URL is required")
+	}
+	if len(raw) > 2048 {
+		return fmt.Errorf("URL has %d bytes; maximum is 2048", len(raw))
+	}
+	if strings.Contains(raw, "#") {
+		return errors.New("URL must not contain a fragment")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("URL scheme must be http or https")
+	}
+	if parsed.Opaque != "" || parsed.Host == "" || parsed.Hostname() == "" {
+		return errors.New("URL must be absolute and include a host")
+	}
+	if parsed.User != nil {
+		return errors.New("URL must not contain credentials")
+	}
+	return nil
+}
+
+func validateJSONPointer(pointer string) error {
+	if len(pointer) > 8192 {
+		return fmt.Errorf("pointer has %d bytes; maximum is 8192", len(pointer))
+	}
+	if !utf8.ValidString(pointer) {
+		return errors.New("pointer must be valid UTF-8")
+	}
+	if pointer == "" {
+		return nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return errors.New("pointer must begin with '/'")
+	}
+	tokens := strings.Split(pointer[1:], "/")
+	if len(tokens) > 64 {
+		return fmt.Errorf("pointer has %d tokens; maximum is 64", len(tokens))
+	}
+	for i, token := range tokens {
+		for offset := 0; offset < len(token); offset++ {
+			if token[offset] != '~' {
+				continue
+			}
+			if offset+1 >= len(token) || token[offset+1] != '0' && token[offset+1] != '1' {
+				return fmt.Errorf("token %d has an invalid '~' escape", i)
+			}
+			offset++
+		}
 	}
 	return nil
 }

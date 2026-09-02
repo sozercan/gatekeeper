@@ -80,6 +80,13 @@ func offlineRuntimeConstraint() *unstructured.Unstructured {
 		"metadata":   map[string]interface{}{"name": "shell-policy"},
 		"spec": map[string]interface{}{
 			"enforcementAction": "dryrun",
+			"match": map[string]interface{}{
+				"subject": map[string]interface{}{
+					"kubernetes": map[string]interface{}{
+						"containerNames": []interface{}{"main"},
+					},
+				},
+			},
 			"parameters": map[string]interface{}{
 				"behaviors": map[string]interface{}{
 					"process": map[string]interface{}{

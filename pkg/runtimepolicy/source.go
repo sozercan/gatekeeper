@@ -94,15 +94,15 @@ func ValidateTemplate(ct *templates.ConstraintTemplate) (bool, error) {
 	if err := decodeStrict(code.Source.GetValue(), &source); err != nil {
 		return true, fmt.Errorf("%w: %w", ErrInvalidRuntimeSource, err)
 	}
-	if source.Version != SourceVersion && source.Version != SubjectSourceVersion {
-		return true, fmt.Errorf("%w: version must be %q or %q, got %q", ErrInvalidRuntimeSource, SourceVersion, SubjectSourceVersion, source.Version)
+	if source.Version != SourceVersion {
+		return true, fmt.Errorf("%w: version must be %q, got %q", ErrInvalidRuntimeSource, SourceVersion, source.Version)
 	}
 	// Frameworks merges every target's match schema into one Constraint match.
-	// A Substrate-only v1alpha2 match would look empty to the Kubernetes target
-	// and could broaden admission. Keep the normalized contract runtime-only
-	// until frameworks has target-specific match sections.
-	if source.Version == SubjectSourceVersion && len(ct.Spec.Targets) != 1 {
-		return true, fmt.Errorf("%w: source version %q must use a runtime-only ConstraintTemplate", ErrInvalidRuntimeTemplate, SubjectSourceVersion)
+	// A runtime subject would look empty to the Kubernetes target and could
+	// broaden admission. Keep the normalized contract runtime-only until
+	// frameworks has target-specific match sections.
+	if len(ct.Spec.Targets) != 1 {
+		return true, fmt.Errorf("%w: source version %q must use a runtime-only ConstraintTemplate", ErrInvalidRuntimeTemplate, SourceVersion)
 	}
 
 	validation := ct.Spec.CRD.Spec.Validation

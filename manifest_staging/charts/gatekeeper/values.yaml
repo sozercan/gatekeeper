@@ -86,9 +86,6 @@ enableK8sNativeValidation: true
 # Enables the declarative runtime.gatekeeper.sh ConstraintTemplate target.
 # Gatekeeper Runtime CRDs and its separately privileged controller/agent must be installed independently.
 enableRuntimeTarget: false
-# Enables v1alpha2 normalized Kubernetes and Substrate runtime subjects.
-# Open only after every eligible Gatekeeper Runtime controller and agent advertises v1alpha2 support.
-enableRuntimeV1Alpha2Subjects: false
 commonAnnotations: {}
 extraVolumeMounts: []
 extraVolumes: []

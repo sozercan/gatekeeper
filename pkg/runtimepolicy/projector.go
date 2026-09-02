@@ -62,21 +62,11 @@ type Projector interface {
 	RuntimePolicyWatchObject() client.Object
 }
 
-// MultiVersionProjector exposes every served RuntimePolicy version without
-// forcing an unsafe conversion through the legacy API.
-type MultiVersionProjector interface {
-	RuntimePolicyWatchObjects() []client.Object
-}
-
 // RuntimePolicyWatchObject returns an unstructured RuntimePolicy suitable for
 // a controller-runtime watch without importing the standalone runtime API.
 func RuntimePolicyWatchObject() *unstructured.Unstructured {
-	return runtimePolicyWatchObject(RuntimePolicyAPIVersion)
-}
-
-func runtimePolicyWatchObject(apiVersion string) *unstructured.Unstructured {
 	object := &unstructured.Unstructured{}
-	object.SetGroupVersionKind(schema.FromAPIVersionAndKind(apiVersion, RuntimePolicyKind))
+	object.SetGroupVersionKind(schema.FromAPIVersionAndKind(RuntimePolicyAPIVersion, RuntimePolicyKind))
 	return object
 }
 
@@ -98,32 +88,18 @@ func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed 
 		return nil, fmt.Errorf("%w: spec.parameters is not an object", ErrInvalidRuntimeConstraint)
 	}
 	spec["mode"] = parsed.Mode
-	apiVersion := RuntimePolicyAPIVersion
-	switch parsed.SourceVersion {
-	case SourceVersion:
-		match, ok := runtime.DeepCopyJSONValue(parsed.RawMatch).(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("%w: spec.match is not an object", ErrInvalidRuntimeConstraint)
-		}
-		mergeConfiguredExclusions(match, parsed.Match.ExcludedNamespaces, configuredExclusions)
-		spec["match"] = match
-	case SubjectSourceVersion:
-		apiVersion = RuntimePolicyAPIVersionV1Alpha2
-		subject, ok := runtime.DeepCopyJSONValue(parsed.RawSubject).(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("%w: spec.match.subject is not an object", ErrInvalidRuntimeConstraint)
-		}
-		if parsed.Subject.Kubernetes != nil {
-			kubernetes, ok := subject["kubernetes"].(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("%w: spec.match.subject.kubernetes is not an object", ErrInvalidRuntimeConstraint)
-			}
-			mergeConfiguredExclusions(kubernetes, parsed.Subject.Kubernetes.ExcludedNamespaces, configuredExclusions)
-		}
-		spec["subject"] = subject
-	default:
-		return nil, fmt.Errorf("%w: unsupported source version %q", ErrInvalidRuntimeConstraint, parsed.SourceVersion)
+	subject, ok := runtime.DeepCopyJSONValue(parsed.RawSubject).(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%w: spec.match.subject is not an object", ErrInvalidRuntimeConstraint)
 	}
+	if parsed.Subject.Kubernetes != nil {
+		kubernetes, ok := subject["kubernetes"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: spec.match.subject.kubernetes is not an object", ErrInvalidRuntimeConstraint)
+		}
+		mergeConfiguredExclusions(kubernetes, parsed.Subject.Kubernetes.ExcludedNamespaces, configuredExclusions)
+	}
+	spec["subject"] = subject
 
 	annotations := map[string]string{
 		sourceAPIVersionAnnotation: constraint.GetAPIVersion(),
@@ -132,7 +108,7 @@ func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed 
 		sourceUIDAnnotation:        string(constraint.GetUID()),
 	}
 	policy := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": apiVersion,
+		"apiVersion": RuntimePolicyAPIVersion,
 		"kind":       RuntimePolicyKind,
 		"metadata": map[string]interface{}{
 			"name":        RuntimePolicyName(constraint),
@@ -141,7 +117,7 @@ func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed 
 		},
 		"spec": spec,
 	}}
-	policy.SetGroupVersionKind(schema.FromAPIVersionAndKind(apiVersion, RuntimePolicyKind))
+	policy.SetGroupVersionKind(schema.FromAPIVersionAndKind(RuntimePolicyAPIVersion, RuntimePolicyKind))
 	if constraint.GetUID() != "" {
 		controller := true
 		blockOwnerDeletion := true
@@ -229,7 +205,7 @@ func projectDesiredRuntimePolicy(ctx context.Context, writer client.Client, read
 		reader = writer
 	}
 
-	current := runtimePolicyWatchObject(desired.GetAPIVersion())
+	current := RuntimePolicyWatchObject()
 	key := types.NamespacedName{Name: desired.GetName()}
 	if err := reader.Get(ctx, key, current); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -239,7 +215,7 @@ func projectDesiredRuntimePolicy(ctx context.Context, writer client.Client, read
 			if !apierrors.IsAlreadyExists(err) {
 				return ProjectionStatus{}, fmt.Errorf("create RuntimePolicy %q: %w", desired.GetName(), err)
 			}
-			current = runtimePolicyWatchObject(desired.GetAPIVersion())
+			current = RuntimePolicyWatchObject()
 			if err := reader.Get(ctx, key, current); err != nil {
 				return ProjectionStatus{}, fmt.Errorf("get concurrently created RuntimePolicy %q: %w", desired.GetName(), err)
 			}
@@ -264,14 +240,14 @@ func projectDesiredRuntimePolicy(ctx context.Context, writer client.Client, read
 	return projectedStatus(desired), nil
 }
 
-func deleteRuntimePolicyVersion(ctx context.Context, writer client.Client, reader client.Reader, constraint *unstructured.Unstructured, apiVersion string) error {
+func deleteRuntimePolicy(ctx context.Context, writer client.Client, reader client.Reader, constraint *unstructured.Unstructured) error {
 	if writer == nil || constraint == nil {
 		return nil
 	}
 	if reader == nil {
 		reader = writer
 	}
-	current := runtimePolicyWatchObject(apiVersion)
+	current := RuntimePolicyWatchObject()
 	key := types.NamespacedName{Name: RuntimePolicyName(constraint)}
 	if err := reader.Get(ctx, key, current); err != nil {
 		if apierrors.IsNotFound(err) {

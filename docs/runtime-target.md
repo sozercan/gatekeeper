@@ -40,9 +40,10 @@ restricted to Gatekeeper's primary webhook configuration.
 
 ## Template contract
 
-A ConstraintTemplate may be runtime-only or may combine the normal admission
-target with the runtime target. Each target keeps its own code block and
-lifecycle. The runtime target must use exactly this non-executable source:
+A runtime ConstraintTemplate must use only the runtime target. Frameworks
+currently shares one `spec.match` across targets, so combining the normalized
+runtime subject with the Kubernetes admission target could broaden admission
+matching. The runtime target must use exactly this non-executable source:
 
 ```yaml
 targets:
@@ -57,55 +58,24 @@ Rego, CEL, libraries, admission operations, additional code blocks, unknown
 source fields, and unsupported source versions are rejected. The template must
 also provide an OpenAPI object schema for its parameters.
 
-`v1alpha1` is the legacy flat Kubernetes match contract. It may be used in a
-combined admission/runtime template. `v1alpha2` replaces the flat match with a
-normalized `subject` and projects `runtime.gatekeeper.sh/v1alpha2` resources.
-Because frameworks currently shares one `spec.match` across targets, every
-`v1alpha2` template must be runtime-only. This prevents a Substrate subject from
-looking like an empty, match-all selector to the Kubernetes admission target.
-
-The normalized source is disabled by default. Enable it only after Gatekeeper
-Runtime reports that every eligible controller and agent supports v1alpha2:
-
-```sh
-helm upgrade --install gatekeeper ./charts/gatekeeper \
-  --namespace gatekeeper-system --create-namespace \
-  --set enableRuntimeTarget=true \
-  --set enableRuntimeV1Alpha2Subjects=true
-```
-
-The equivalent Kustomize overlay enables both runtime flags:
-
-```sh
-kubectl apply -k config/runtime-target-v1alpha2
-```
-
-Gatekeeper Runtime's `controller.enableV1Alpha2Subjects` gate must already be
-open. For rollback, stop creating v1alpha2 Constraints, remove or migrate every
-projected v1alpha2 RuntimePolicy, disable the Gatekeeper gate, then roll back
-Gatekeeper Runtime agents and controllers. An old agent must never receive a
-Substrate subject through v1alpha1 conversion.
-
-In a combined template, `admission.k8s.gatekeeper.sh` Rego/CEL is evaluated for
-admission and audit, while `runtime.gatekeeper.sh` is projected to a
-`RuntimePolicy`. Gatekeeper never runs runtime policy evaluation in an admission
-request or audit loop, and it never treats admission Rego as kernel policy.
+Gatekeeper projects `v1alpha1` sources to
+`runtime.gatekeeper.sh/v1alpha1` `RuntimePolicy` resources. Gatekeeper never runs
+runtime policy evaluation in an admission request or audit loop.
 
 Constraint parameters use the `RuntimePolicy.spec` fields other than `mode` and
-`match`:
+`subject`:
 
-- `match` comes from `Constraint.spec.match` and supports namespace selectors,
-  pod selectors, and application/init/ephemeral container types.
+- `subject` comes from `Constraint.spec.match.subject`.
 - `mode` comes from Gatekeeper semantics: `deny` becomes `Enforce`, and `dryrun`
   becomes `Monitor`.
 - `warn` is rejected because runtime enforcement cannot return a synchronous
   admission warning. Scoped enforcement actions are not supported by this
   single-target contract.
-- `failurePolicy`, `behaviors`, `dynamicSources`, `staleDataPolicy`, and
-  `resourceLimits` are passed through after strict structural and bounded
-  semantic validation.
+- `failurePolicy`, `behaviors`, `monitorFilter`, `dynamicSources`,
+  `staleDataPolicy`, and `resourceLimits` are passed through after structural
+  and bounded semantic validation.
 
-For source version `v1alpha2`, `Constraint.spec.match` must contain only
+For source version `v1alpha1`, `Constraint.spec.match` must contain only
 `subject`. Exactly one subject kind is required:
 
 - `kubernetes` supports namespace and Pod selectors, excluded namespaces,
@@ -119,17 +89,16 @@ For source version `v1alpha2`, `Constraint.spec.match` must contain only
 
 See [the example template](../example/runtime/constrainttemplate.yaml) and
 [constraint](../example/runtime/constraint.yaml). The
-[v1alpha2 runtime-only template](../example/runtime/constrainttemplate-v1alpha2.yaml)
-and [Substrate constraint](../example/runtime/constraint-v1alpha2.yaml) show the
-normalized subject contract. The
+[Substrate template](../example/runtime/constrainttemplate-substrate.yaml) and
+[constraint](../example/runtime/constraint-substrate.yaml) show the Atespace
+subject contract. The
 [runtime-only Connection example](../example/runtime/connection.yaml) shows the
 producer-side export configuration.
 
 ## Lifecycle and status
 
 For every accepted runtime Constraint, Gatekeeper creates one deterministic,
-cluster-scoped `RuntimePolicy` in the API version selected by the template
-source. The policy has a
+cluster-scoped `runtime.gatekeeper.sh/v1alpha1` `RuntimePolicy`. The policy has a
 controller owner reference to the Constraint and source-identity annotations.
 Gatekeeper refuses to overwrite a same-named object that it does not own.
 
@@ -150,8 +119,8 @@ controls safe policy withdrawal from nodes.
 
 The runtime projection consumes Gatekeeper `Config.spec.match` entries whose
 `processes` include `runtime` or `*`. Matching namespace exclusions are merged
-with the legacy match or a v1alpha2 Kubernetes subject before Gatekeeper writes
-the RuntimePolicy. They never apply to Substrate Atespaces. Config
+with a Kubernetes subject before Gatekeeper writes the RuntimePolicy. They never
+apply to Substrate Atespaces. Config
 reconciliation immediately refreshes existing projections, so the standalone
 runtime controller and agents do not need permission to read Gatekeeper Config
 resources.

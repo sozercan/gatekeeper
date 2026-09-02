@@ -108,7 +108,6 @@ spec:
             - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL }}
             - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
             - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
-            - --enable-runtime-v1alpha2-subjects={{ .Values.enableRuntimeV1Alpha2Subjects }}
             - HELMSUBST_DEPLOYMENT_DEFAULT_K8S_NATIVE_VALIDATION_FAILURE_POLICY
             - HELMBUST_ENABLE_TLS_APISERVER_AUTHENTICATION
             - HELMSUBST_METRICS_BACKEND_ARG
@@ -226,7 +225,6 @@ spec:
             - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL }}
             - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
             - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
-            - --enable-runtime-v1alpha2-subjects={{ .Values.enableRuntimeV1Alpha2Subjects }}
             - HELMSUBST_DEPLOYMENT_DEFAULT_K8S_NATIVE_VALIDATION_FAILURE_POLICY
             - HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAP_FOR_TEMPLATES
             - HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAPB_FOR_CONSTRAINTS

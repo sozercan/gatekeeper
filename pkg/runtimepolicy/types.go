@@ -20,20 +20,23 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 type Parameters struct {
 	FailurePolicy   string                `json:"failurePolicy,omitempty"`
 	Behaviors       Behaviors             `json:"behaviors"`
+	MonitorFilter   *MonitorFilter        `json:"monitorFilter,omitempty"`
 	DynamicSources  []DynamicSource       `json:"dynamicSources,omitempty"`
 	StaleDataPolicy *StaleDataPolicy      `json:"staleDataPolicy,omitempty"`
 	ResourceLimits  *PolicyResourceLimits `json:"resourceLimits,omitempty"`
 }
 
-type Match struct {
-	NamespaceSelector  metav1.LabelSelector `json:"namespaceSelector,omitempty"`
-	PodSelector        metav1.LabelSelector `json:"podSelector,omitempty"`
-	ContainerTypes     []string             `json:"containerTypes,omitempty"`
-	ExcludedNamespaces []string             `json:"excludedNamespaces,omitempty"`
+type MonitorFilter struct {
+	Expressions []MonitorFilterExpression `json:"expressions"`
 }
 
-// PolicySubject is the v1alpha2 semantic one-of runtime subject. Exactly one
-// field must be set.
+type MonitorFilterExpression struct {
+	Name       string `json:"name"`
+	Expression string `json:"expression"`
+}
+
+// PolicySubject is the semantic one-of runtime subject. Exactly one field must
+// be set.
 type PolicySubject struct {
 	Kubernetes *KubernetesSubject `json:"kubernetes,omitempty"`
 	Substrate  *SubstrateSubject  `json:"substrate,omitempty"`
@@ -64,10 +67,11 @@ type ActorTemplateMatch struct {
 }
 
 type Behaviors struct {
-	Process     *ProcessBehavior     `json:"process,omitempty"`
-	File        *FileBehavior        `json:"file,omitempty"`
-	Network     *NetworkBehavior     `json:"network,omitempty"`
-	Observation *ObservationBehavior `json:"observation,omitempty"`
+	Process     *ProcessBehavior             `json:"process,omitempty"`
+	File        *FileBehavior                `json:"file,omitempty"`
+	Network     *NetworkBehavior             `json:"network,omitempty"`
+	Protocol    *ApplicationProtocolBehavior `json:"protocol,omitempty"`
+	Observation *ObservationBehavior         `json:"observation,omitempty"`
 }
 
 type ProcessBehavior struct {
@@ -128,6 +132,16 @@ type ObservationBehavior struct {
 	Arguments *ArgumentCollectionSettings `json:"arguments,omitempty"`
 }
 
+type ApplicationProtocolBehavior struct {
+	DefaultAction string                    `json:"defaultAction,omitempty"`
+	Rules         []ApplicationProtocolRule `json:"rules,omitempty"`
+}
+
+type ApplicationProtocolRule struct {
+	Protocol string `json:"protocol"`
+	Action   string `json:"action"`
+}
+
 type ArgumentCollectionSettings struct {
 	Enabled             bool  `json:"enabled,omitempty"`
 	MaxArguments        int32 `json:"maxArguments,omitempty"`
@@ -140,7 +154,9 @@ type DynamicSource struct {
 	OutputType          string                     `json:"outputType"`
 	Required            *bool                      `json:"required,omitempty"`
 	Projection          DynamicProjection          `json:"projection"`
+	JSONPointer         string                     `json:"jsonPointer,omitempty"`
 	ConfigMapRef        *ConfigMapKeyReference     `json:"configMapRef,omitempty"`
+	HTTPRef             *HTTPJSONReference         `json:"httpRef,omitempty"`
 	ExternalProviderRef *ExternalProviderReference `json:"externalProviderRef,omitempty"`
 	CEL                 *CELSource                 `json:"cel,omitempty"`
 }
@@ -157,6 +173,11 @@ type ConfigMapKeyReference struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	Key       string `json:"key"`
+}
+
+type HTTPJSONReference struct {
+	URL        string `json:"url"`
+	TTLSeconds int64  `json:"ttlSeconds,omitempty"`
 }
 
 type ExternalProviderReference struct {
