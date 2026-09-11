@@ -127,12 +127,18 @@ resources.
 
 ## Connection export
 
-When the runtime target is enabled, Gatekeeper exposes
-`POST /v1/export/runtime/{connection}` on its existing TLS webhook service. The
-endpoint authenticates the caller with TokenReview, authorizes `create` on the
-exact non-resource URL with SubjectAccessReview, validates the bounded
-`RuntimeFindingBatch`, and publishes each finding through the initialized
-Connection driver.
+Enable `--enable-runtime-violation-export=true` on the controller-manager to
+accept findings from Gatekeeper Runtime, including directly authored
+RuntimePolicies. With Helm, set `enableRuntimeViolationExport=true`. This
+option does not require the runtime ConstraintTemplate target or grant
+RuntimePolicy projection permissions. Enabling `--enable-runtime-target=true`
+continues to enable runtime export as well.
+
+Gatekeeper exposes `POST /v1/export/runtime/{connection}` on its existing TLS
+webhook service. The endpoint authenticates the caller with TokenReview,
+authorizes `create` on the exact non-resource URL with SubjectAccessReview,
+validates the bounded `RuntimeFindingBatch`, and publishes each finding
+through the initialized Connection driver.
 
 Runtime export requires a dedicated Connection with exactly `sources:
 [runtime]`; sharing an audit/webhook Connection is rejected. For example:
@@ -151,6 +157,18 @@ spec:
     maxAuditResults: 3
 ```
 
+For the disk driver, mount a writable volume at `/tmp/violations` in the
+controller-manager. The [export-only Helm values](../example/runtime/export-values.yaml)
+enable the endpoint and add an `emptyDir` volume for testing. Records go to the
+`runtime` topic directory as JSONL. Use persistent storage or a log collector
+when records must outlive the pod. For Dapr, configure its sidecar and pubsub
+component on the controller-manager and use `driver: dapr` with
+`config.component`; the topic is `runtime`.
+
+The Helm chart grants the controller-manager `create` on TokenReviews and
+SubjectAccessReviews whenever runtime export is enabled. Install equivalent
+RBAC when configuring the flag without Helm.
+
 On managed Kubernetes distributions that own an older Gatekeeper Connection
 CRD and prune `spec.sources`, annotate the otherwise dedicated Connection with
 `runtime.gatekeeper.sh/connection-source: runtime`. The annotation is a
@@ -159,9 +177,26 @@ fail-closed compatibility fallback: Gatekeeper considers it only when
 
 The runtime agent reads Gatekeeper's serving CA from the configured
 `ValidatingWebhookConfiguration`, uses its rotating service-account token, and
-requires only `create` on `/v1/export/runtime/*`. Add `runtime-connection` to
-`RuntimeConfig/cluster.spec.exports.connections`. Delivery is bounded,
-at-least-once, and independent of kernel enforcement health.
+requires only `create` on `/v1/export/runtime/*`. Add the Connection name to the
+existing `RuntimeConfig/cluster`:
+
+```yaml
+spec:
+  exports:
+    connections:
+      - runtime-connection
+```
+
+Delivery uses bounded queues and retries independently of kernel enforcement.
+Retries can duplicate findings after a partial backend failure, and exhausted
+queues or retries can lose findings. Consumers must tolerate duplicate records.
+
+After installing the export-only Helm values in a disposable cluster, verify
+delivery and producer authorization with:
+
+```sh
+make test-e2e BATS_TESTS_FILE=test/bats/runtime-export.bats
+```
 
 ## Coexistence with native RuntimePolicy
 

@@ -16,15 +16,21 @@ limitations under the License.
 package webhook
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
+	gatekeeperexport "github.com/open-policy-agent/gatekeeper/v3/pkg/export"
+	"github.com/stretchr/testify/require"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -184,7 +190,45 @@ func TestRuntimeExportHandlerRejectsInvalidBatchAndReportsBackendFailure(t *test
 	}
 }
 
-func newRuntimeExportTestHandler(t *testing.T, exporter *recordingRuntimeExporter, sources []connectionv1alpha1.ConnectionSource, annotations map[string]string, authenticated, allowed bool, reviewed *authorizationv1.SubjectAccessReviewSpec) *runtimeExportHandler {
+func TestRuntimeExportHandlerWritesGKRFindings(t *testing.T) {
+	// Use the complete gkr wire format and the real Connection disk driver.
+	body, err := os.ReadFile(filepath.Join("..", "..", "test", "export", "runtime-finding-batch.json"))
+	require.NoError(t, err)
+	var batch runtimeFindingBatch
+	require.NoError(t, json.Unmarshal(body, &batch))
+
+	directory := t.TempDir()
+	exporter := gatekeeperexport.NewSystem()
+	require.NoError(t, exporter.UpsertConnection(t.Context(), map[string]any{
+		"path": directory, "maxAuditResults": float64(3),
+	}, "runtime-connection", "disk"))
+	t.Cleanup(func() { require.NoError(t, exporter.CloseConnection("runtime-connection")) })
+	handler := newRuntimeExportTestHandler(t, exporter, []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, nil, true, true, nil)
+	server := httptest.NewTLSServer(handler)
+	defer server.Close()
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+runtimeExportPathPrefix+"runtime-connection", bytes.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusAccepted, response.StatusCode)
+
+	files, err := filepath.Glob(filepath.Join(directory, "runtime", "*.open"))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	stored, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	records := bytes.Split(bytes.TrimSpace(stored), []byte{'\n'})
+	require.Equal(t, len(batch.Findings), len(records), "each finding must occupy one JSONL record")
+	for index, finding := range batch.Findings {
+		require.JSONEq(t, string(finding), string(records[index]), "finding fields must survive export")
+	}
+}
+
+func newRuntimeExportTestHandler(t *testing.T, exporter gatekeeperexport.Exporter, sources []connectionv1alpha1.ConnectionSource, annotations map[string]string, authenticated, allowed bool, reviewed *authorizationv1.SubjectAccessReviewSpec) *runtimeExportHandler {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := connectionv1alpha1.AddToScheme(scheme); err != nil {

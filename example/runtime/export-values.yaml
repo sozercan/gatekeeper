@@ -1,0 +1,8 @@
+# Use a Gatekeeper image built with runtime export support.
+enableRuntimeViolationExport: true
+extraVolumes:
+  - name: runtime-violations
+    emptyDir: {}
+extraVolumeMounts:
+  - name: runtime-violations
+    mountPath: /tmp/violations

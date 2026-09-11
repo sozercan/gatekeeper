@@ -38,6 +38,8 @@ const (
   - patch
   - update
   - watch
+{{- end }}
+{{- if or .Values.enableRuntimeTarget .Values.enableRuntimeViolationExport }}
 - apiGroups:
   - authentication.k8s.io
   resources:

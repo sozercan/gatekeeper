@@ -17,7 +17,12 @@ func TestRuntimeFindingBatchWritesValidatedJSONL(t *testing.T) {
 	t.Cleanup(func() { _ = writer.CloseConnection(connectionName) })
 
 	findings := []any{
-		json.RawMessage(`{"apiVersion":"runtime.gatekeeper.sh/v1alpha1","kind":"RuntimeFinding","eventVersion":1,"sequence":1}`),
+		json.RawMessage(`{
+  "apiVersion": "runtime.gatekeeper.sh/v1alpha1",
+  "kind": "RuntimeFinding",
+  "eventVersion": 1,
+  "sequence": 1
+}`),
 		json.RawMessage(`{"apiVersion":"runtime.gatekeeper.sh/v1alpha1","kind":"RuntimeFinding","eventVersion":1,"sequence":2}`),
 	}
 	results := writer.PublishBatch(context.Background(), connectionName, findings, exportutil.RuntimeExportSubject)

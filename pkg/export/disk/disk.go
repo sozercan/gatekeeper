@@ -600,10 +600,14 @@ func encodeRuntimeFinding(data interface{}) ([]byte, error) {
 		}
 	}
 	trimmed := bytes.TrimSpace(encoded)
-	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return nil, fmt.Errorf("invalid runtime finding: expected one JSON object")
 	}
-	return trimmed, nil
+	var record bytes.Buffer
+	if err := json.Compact(&record, trimmed); err != nil {
+		return nil, fmt.Errorf("invalid runtime finding: %w", err)
+	}
+	return record.Bytes(), nil
 }
 
 // connectionFromConfig applies user-configured audit settings and initializes

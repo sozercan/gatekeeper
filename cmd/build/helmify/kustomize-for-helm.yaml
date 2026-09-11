@@ -108,6 +108,7 @@ spec:
             - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL }}
             - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
             - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
+            - --enable-runtime-violation-export={{ .Values.enableRuntimeViolationExport }}
             - HELMSUBST_DEPLOYMENT_DEFAULT_K8S_NATIVE_VALIDATION_FAILURE_POLICY
             - HELMBUST_ENABLE_TLS_APISERVER_AUTHENTICATION
             - HELMSUBST_METRICS_BACKEND_ARG

@@ -86,6 +86,9 @@ enableK8sNativeValidation: true
 # Enables the declarative runtime.gatekeeper.sh ConstraintTemplate target.
 # Gatekeeper Runtime CRDs and its separately privileged controller/agent must be installed independently.
 enableRuntimeTarget: false
+# Enables authenticated runtime finding export through dedicated Connections.
+# The runtime target also enables export; standalone export needs no RuntimePolicy projection.
+enableRuntimeViolationExport: false
 commonAnnotations: {}
 extraVolumeMounts: []
 extraVolumes: []

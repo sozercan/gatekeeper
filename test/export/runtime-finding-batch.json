@@ -1,0 +1,60 @@
+{
+  "apiVersion": "runtime.gatekeeper.sh/export/v1alpha1",
+  "kind": "RuntimeFindingBatch",
+  "subject": "runtime",
+  "findings": [
+    {
+      "apiVersion": "runtime.gatekeeper.sh/v1alpha1",
+      "kind": "RuntimeFinding",
+      "eventVersion": 1,
+      "observedAt": "2026-08-20T20:00:00Z",
+      "sequence": 42,
+      "node": {
+        "name": "worker-1",
+        "uid": "d6e39e77-5ad1-4ebc-91ca-f55e44f5274e"
+      },
+      "workload": {
+        "namespace": "payments",
+        "podName": "api-75687b9c68-k2q8w",
+        "podUID": "719559fd-4892-42ec-a9f4-3fd3a4024581",
+        "containerName": "api",
+        "containerID": "containerd://0123456789abcdef",
+        "containerType": "Application",
+        "cgroupID": 883214,
+        "mountNamespace": 4026532921
+      },
+      "process": {
+        "pid": 1917,
+        "uid": 1000,
+        "gid": 1000,
+        "executable": "/usr/bin/cat"
+      },
+      "operation": {
+        "path": "/var/run/secrets/kubernetes.io/serviceaccount/token",
+        "access": [
+          "Read"
+        ]
+      },
+      "policy": {
+        "name": "protect-service-account-tokens",
+        "uid": "51b40a51-973d-4a1e-8aef-38725b2a939d",
+        "generation": 3,
+        "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "failurePolicy": "FailOpen"
+      },
+      "behavior": "File",
+      "decision": "WouldDeny",
+      "requestedMode": "Monitor",
+      "activeGeneration": 17,
+      "kernelEnforced": false,
+      "attribution": "Attributed",
+      "reason": "PolicyMatched",
+      "loss": {
+        "ringBufferDropped": 0,
+        "unattributedDropped": 0,
+        "queueDropped": 0,
+        "sinkDropped": 0
+      }
+    }
+  ]
+}

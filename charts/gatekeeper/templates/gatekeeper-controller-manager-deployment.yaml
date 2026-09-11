@@ -105,6 +105,8 @@ spec:
           }}
         - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
         - --enable-runtime-target={{ .Values.enableRuntimeTarget }}
+        - --enable-runtime-violation-export={{ .Values.enableRuntimeViolationExport
+          }}
 
         {{- if hasKey .Values "defaultK8sNativeValidationFailurePolicy"}}
         - --default-k8s-native-validation-failure-policy={{ .Values.defaultK8sNativeValidationFailurePolicy }}
