@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"os"
 
 	daprClient "github.com/dapr/go-sdk/client"
 )
@@ -49,7 +51,7 @@ func (r *Dapr) Publish(ctx context.Context, connectionName string, data interfac
 func (r *Dapr) CloseConnection(connectionName string) error {
 	conn, ok := r.openConnections[connectionName]
 	if !ok {
-		return fmt.Errorf("connection %s not found for disk driver", connectionName)
+		return fmt.Errorf("connection %s not found for Dapr driver", connectionName)
 	}
 	defer delete(r.openConnections, connectionName)
 	conn.client.Close()
@@ -71,7 +73,7 @@ func (r *Dapr) UpdateConnection(_ context.Context, connectionName string, config
 	return nil
 }
 
-func (r *Dapr) CreateConnection(_ context.Context, connectionName string, config interface{}) error {
+func (r *Dapr) CreateConnection(ctx context.Context, connectionName string, config interface{}) error {
 	var conn Connection
 	cfg, ok := config.(map[string]interface{})
 	if !ok {
@@ -82,7 +84,13 @@ func (r *Dapr) CreateConnection(_ context.Context, connectionName string, config
 		return fmt.Errorf("failed to get value of component")
 	}
 
-	tmp, err := daprClient.NewClient()
+	port := os.Getenv("DAPR_GRPC_PORT")
+	if port == "" {
+		port = "50001"
+	}
+	// NewClient returns a process-wide singleton. Each Connection owns its
+	// client so closing one cannot close every Dapr Connection in the pod.
+	tmp, err := daprClient.NewClientWithAddressContext(ctx, net.JoinHostPort("127.0.0.1", port))
 	if err != nil {
 		return err
 	}

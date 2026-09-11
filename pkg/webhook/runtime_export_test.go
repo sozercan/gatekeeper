@@ -30,6 +30,8 @@ import (
 
 	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	gatekeeperexport "github.com/open-policy-agent/gatekeeper/v3/pkg/export"
+	exportutil "github.com/open-policy-agent/gatekeeper/v3/pkg/export/util"
+	anythingtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/stretchr/testify/require"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -51,30 +53,33 @@ const validRuntimeExportBody = `{
 type recordingRuntimeExporter struct {
 	mu         sync.Mutex
 	connection string
+	source     connectionv1alpha1.ConnectionSource
 	subject    string
 	messages   []any
 	publishErr error
 }
 
-func (exporter *recordingRuntimeExporter) Publish(_ context.Context, connectionName, subject string, message interface{}) error {
+func (exporter *recordingRuntimeExporter) Publish(_ context.Context, source connectionv1alpha1.ConnectionSource, connectionName, subject string, message interface{}) error {
 	exporter.mu.Lock()
 	defer exporter.mu.Unlock()
 	exporter.connection = connectionName
+	exporter.source = source
 	exporter.subject = subject
 	exporter.messages = append(exporter.messages, message)
 	return exporter.publishErr
 }
 
-func (*recordingRuntimeExporter) UpsertConnection(context.Context, interface{}, string, string) error {
+func (*recordingRuntimeExporter) UpsertConnection(context.Context, *connectionv1alpha1.Connection) error {
 	return nil
 }
 
 func (*recordingRuntimeExporter) CloseConnection(string) error { return nil }
 
-func (exporter *recordingRuntimeExporter) PublishBatch(_ context.Context, connectionName, subject string, messages []any) []error {
+func (exporter *recordingRuntimeExporter) PublishBatchForConnection(_ context.Context, source connectionv1alpha1.ConnectionSource, connection *connectionv1alpha1.Connection, subject string, messages []any) []error {
 	exporter.mu.Lock()
 	defer exporter.mu.Unlock()
-	exporter.connection = connectionName
+	exporter.connection = connection.Name
+	exporter.source = source
 	exporter.subject = subject
 	exporter.messages = append(exporter.messages, messages...)
 	results := make([]error, len(messages))
@@ -107,6 +112,13 @@ func TestRuntimeExportHandlerPublishesAuthorizedBatch(t *testing.T) {
 	if exporter.connection != "runtime-connection" || exporter.subject != "runtime" || len(exporter.messages) != 1 {
 		t.Fatalf("publish=%q %q %#v", exporter.connection, exporter.subject, exporter.messages)
 	}
+	require.Equal(t, connectionv1alpha1.RuntimeSource, exporter.source)
+	require.IsType(t, exportutil.RuntimeFinding(nil), exporter.messages[0])
+}
+
+func TestAddRuntimeExportWebhookRequiresConnectionAwareExporter(t *testing.T) {
+	err := AddRuntimeExportWebhook(nil, Dependencies{RuntimeExportEnabled: true, ExportSystem: &fakeAdmissionExportSystem{}})
+	require.ErrorContains(t, err, "Connection-aware batch exporter")
 }
 
 func TestRuntimeExportHandlerEnforcesAuthenticationAuthorizationAndSource(t *testing.T) {
@@ -199,11 +211,13 @@ func TestRuntimeExportHandlerWritesGKRFindings(t *testing.T) {
 
 	directory := t.TempDir()
 	exporter := gatekeeperexport.NewSystem()
-	require.NoError(t, exporter.UpsertConnection(t.Context(), map[string]any{
-		"path": directory, "maxAuditResults": float64(3),
-	}, "runtime-connection", "disk"))
 	t.Cleanup(func() { require.NoError(t, exporter.CloseConnection("runtime-connection")) })
 	handler := newRuntimeExportTestHandler(t, exporter, []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, nil, true, true, nil)
+	connection := &connectionv1alpha1.Connection{}
+	require.NoError(t, handler.reader.Get(t.Context(), client.ObjectKey{Namespace: "gatekeeper-system", Name: "runtime-connection"}, connection))
+	connection.Spec.Driver = "disk"
+	connection.Spec.Config = &anythingtypes.Anything{Value: map[string]any{"path": directory, "maxAuditResults": float64(3)}}
+	require.NoError(t, exporter.UpsertConnection(t.Context(), connection))
 	server := httptest.NewTLSServer(handler)
 	defer server.Close()
 
@@ -228,7 +242,7 @@ func TestRuntimeExportHandlerWritesGKRFindings(t *testing.T) {
 	}
 }
 
-func newRuntimeExportTestHandler(t *testing.T, exporter gatekeeperexport.Exporter, sources []connectionv1alpha1.ConnectionSource, annotations map[string]string, authenticated, allowed bool, reviewed *authorizationv1.SubjectAccessReviewSpec) *runtimeExportHandler {
+func newRuntimeExportTestHandler(t *testing.T, exporter gatekeeperexport.ConnectionBatchExporter, sources []connectionv1alpha1.ConnectionSource, annotations map[string]string, authenticated, allowed bool, reviewed *authorizationv1.SubjectAccessReviewSpec) *runtimeExportHandler {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := connectionv1alpha1.AddToScheme(scheme); err != nil {

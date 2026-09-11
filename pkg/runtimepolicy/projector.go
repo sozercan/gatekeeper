@@ -83,9 +83,12 @@ func buildRuntimePolicyWithExclusions(constraint *unstructured.Unstructured, con
 }
 
 func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed *ParsedConstraint, configuredExclusions []string) (*unstructured.Unstructured, error) {
-	spec, ok := runtime.DeepCopyJSONValue(parsed.RawParameters).(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("%w: spec.parameters is not an object", ErrInvalidRuntimeConstraint)
+	// Match the RuntimePolicy API's omission semantics for validated optional
+	// values. Raw zero or empty fields can otherwise bypass API defaults and
+	// fail the destination schema after the Constraint has been accepted.
+	spec, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&parsed.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("%w: normalize spec.parameters: %w", ErrInvalidRuntimeConstraint, err)
 	}
 	spec["mode"] = parsed.Mode
 	subject, ok := runtime.DeepCopyJSONValue(parsed.RawSubject).(map[string]interface{})
@@ -97,7 +100,9 @@ func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed 
 		if !ok {
 			return nil, fmt.Errorf("%w: spec.match.subject.kubernetes is not an object", ErrInvalidRuntimeConstraint)
 		}
-		mergeConfiguredExclusions(kubernetes, parsed.Subject.Kubernetes.ExcludedNamespaces, configuredExclusions)
+		if err := mergeConfiguredExclusions(kubernetes, parsed.Subject.Kubernetes.ExcludedNamespaces, configuredExclusions); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidRuntimeConstraint, err)
+		}
 	}
 	spec["subject"] = subject
 
@@ -133,7 +138,7 @@ func buildRuntimePolicyFromParsed(constraint *unstructured.Unstructured, parsed 
 	return policy, nil
 }
 
-func mergeConfiguredExclusions(into map[string]interface{}, declared, configured []string) {
+func mergeConfiguredExclusions(into map[string]interface{}, declared, configured []string) error {
 	excluded := append([]string(nil), declared...)
 	excluded = append(excluded, configured...)
 	sort.Strings(excluded)
@@ -143,15 +148,19 @@ func mergeConfiguredExclusions(into map[string]interface{}, declared, configured
 			unique = append(unique, namespace)
 		}
 	}
+	if err := validateNamespaceExclusions("combined Constraint and Config runtime excludedNamespaces", unique); err != nil {
+		return err
+	}
 	if len(unique) == 0 {
 		delete(into, "excludedNamespaces")
-		return
+		return nil
 	}
 	values := make([]interface{}, len(unique))
 	for i, namespace := range unique {
 		values[i] = namespace
 	}
 	into["excludedNamespaces"] = values
+	return nil
 }
 
 // RuntimePolicyName returns the deterministic name of the RuntimePolicy owned

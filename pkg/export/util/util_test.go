@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestRuntimeFindingMarshalsAsOriginalObject(t *testing.T) {
+	finding := RuntimeFinding(`{"kind":"RuntimeFinding","sequence":18446744073709551615,"message":"one\ntwo"}`)
+	encoded, err := json.Marshal(finding)
+	require.NoError(t, err)
+	require.Equal(t, string(finding), string(encoded))
+}
 
 func TestAdmissionExportFlagDefaults(t *testing.T) {
 	got := flag.CommandLine.Lookup("enable-admission-violation-export")

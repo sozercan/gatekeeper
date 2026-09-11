@@ -57,7 +57,7 @@ func (*Target) MatchSchema() apiextensions.JSONSchemaProps { return matchSchema(
 
 func (t *Target) ValidateConstraint(constraint *unstructured.Unstructured) error {
 	if t.driver != nil {
-		_, err := t.driver.parseConstraint(constraint)
+		_, err := t.driver.buildRuntimePolicy(constraint, t.driver.configuredExclusions())
 		return err
 	}
 	_, err := ParseConstraint(constraint)
@@ -76,8 +76,8 @@ func matchSchema() apiextensions.JSONSchemaProps {
 	maxContainerTypes := int64(3)
 	maxSelectorExpressions := int64(64)
 	maxSelectorValues := int64(256)
-	maxExcludedNamespaces := int64(256)
-	maxNamespacePatternLength := int64(253)
+	maxExcludedNamespaces := int64(maxNamespaceExclusions)
+	maxNamespacePatternLength := int64(maxNamespaceExclusionLength)
 	maxSubjectNameItems := int64(maxSubjectNames)
 	maxAtespacePatternItems := int64(maxAtespacePatterns)
 	maxAtespacePatternLength := int64(maxAtespaceLength)
@@ -125,7 +125,7 @@ func matchSchema() apiextensions.JSONSchemaProps {
 	excludedNamespaces := apiextensions.JSONSchemaProps{
 		Type: "array", MaxItems: &maxExcludedNamespaces,
 		Items: &apiextensions.JSONSchemaPropsOrArray{Schema: &apiextensions.JSONSchemaProps{
-			Type: "string", MaxLength: &maxNamespacePatternLength, Pattern: `^\*?[-:a-z0-9]*\*?$`,
+			Type: "string", MinLength: int64Ptr(1), MaxLength: &maxNamespacePatternLength, Pattern: namespaceExclusionPattern.String(),
 		}},
 	}
 	kubernetesSubject := apiextensions.JSONSchemaProps{

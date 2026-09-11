@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"strings"
@@ -9,9 +10,17 @@ import (
 const (
 	defaultConnection = "audit-connection"
 	defaultChannel    = "audit-channel"
-	// RuntimeExportSubject is the Connection subject reserved for runtime findings.
+	// RuntimeExportSubject is the Connection subject used for runtime findings.
 	RuntimeExportSubject = "runtime"
 )
+
+// RuntimeFinding identifies a runtime payload independently of its destination
+// subject. It marshals as the original finding object for external drivers.
+type RuntimeFinding json.RawMessage
+
+func (finding RuntimeFinding) MarshalJSON() ([]byte, error) {
+	return json.RawMessage(finding).MarshalJSON()
+}
 
 const (
 	// MaxConnectionStatusErrors is the maximum number of errors stored in one status field.

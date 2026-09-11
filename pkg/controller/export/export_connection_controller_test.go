@@ -149,6 +149,187 @@ func TestSupportsConnectionRuntimeAnnotationFallback(t *testing.T) {
 	require.False(t, reconciler.supportsConnection(annotated), "explicit non-runtime sources must override the annotation")
 }
 
+func TestRuntimeConnectionCannotBecomeALegacyConnectionWhenRuntimeIsDisabled(t *testing.T) {
+	oldAudit, oldAdmission := *exportutil.ExportEnabled, *exportutil.AdmissionExportEnabled
+	*exportutil.ExportEnabled, *exportutil.AdmissionExportEnabled = true, true
+	t.Cleanup(func() { *exportutil.ExportEnabled, *exportutil.AdmissionExportEnabled = oldAudit, oldAdmission })
+	for _, annotated := range []bool{false, true} {
+		connection := &connectionv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "shared-name"}}
+		if annotated {
+			connection.Annotations = map[string]string{connectionv1alpha1.RuntimeSourceAnnotation: string(connectionv1alpha1.RuntimeSource)}
+		} else {
+			connection.Spec.Sources = []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}
+		}
+		reconciler := &Reconciler{auditConnectionName: connection.Name}
+		require.False(t, reconciler.supportsConnection(connection))
+		reconciler.runtimeExportEnabled = true
+		require.True(t, reconciler.supportsConnection(connection))
+	}
+}
+
+func TestReconcileConnectionSourceChangesAndInvalidConfigRevokeOldPublishers(t *testing.T) {
+	testutils.Setenv(t, "POD_NAMESPACE", "gatekeeper-system")
+	oldAudit, oldAdmission := *exportutil.ExportEnabled, *exportutil.AdmissionExportEnabled
+	*exportutil.ExportEnabled, *exportutil.AdmissionExportEnabled = true, true
+	t.Cleanup(func() { *exportutil.ExportEnabled, *exportutil.AdmissionExportEnabled = oldAudit, oldAdmission })
+	testScheme := runtime.NewScheme()
+	require.NoError(t, connectionv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, statusv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, corev1.AddToScheme(testScheme))
+	connection := &connectionv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-runtime-sources", Namespace: "gatekeeper-system", UID: "connection-uid", Generation: 1},
+		Spec: connectionv1alpha1.ConnectionSpec{
+			Driver:  disk.Name,
+			Config:  &anythingtypes.Anything{Value: diskConnectionConfig(t.TempDir())},
+			Sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(connection).Build()
+	system := export.NewSystem()
+	t.Cleanup(func() { require.NoError(t, system.CloseConnection(connection.Name)) })
+	reconciler := &Reconciler{
+		reader:               k8sClient,
+		writer:               k8sClient,
+		scheme:               testScheme,
+		system:               system,
+		auditConnectionName:  connection.Name,
+		runtimeExportEnabled: true,
+		getPod: func(context.Context) (*corev1.Pod, error) {
+			return fakes.Pod(fakes.WithNamespace("gatekeeper-system"), fakes.WithName("source-pod")), nil
+		},
+	}
+	request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(connection)}
+	_, err := reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	finding := exportutil.RuntimeFinding(`{"apiVersion":"runtime.gatekeeper.sh/v1alpha1","kind":"RuntimeFinding","eventVersion":1}`)
+	require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.RuntimeSource, connection.Name, "runtime", finding))
+	for _, source := range []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource} {
+		require.Error(t, system.Publish(t.Context(), source, connection.Name, "runtime", finding))
+	}
+
+	connection.Spec.Sources = []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource}
+	connection.Generation++
+	require.NoError(t, k8sClient.Update(t.Context(), connection))
+	_, err = reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.RuntimeSource, connection.Name, "runtime", finding))
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.WebhookSource, connection.Name, "runtime", finding))
+	require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.AuditSource, connection.Name, "audit", exportutil.ExportMsg{ID: "audit-1", Message: exportutil.AuditStartedMsg}))
+
+	validConfig := connection.Spec.Config.DeepCopy()
+	connection.Spec.Config = &anythingtypes.Anything{Value: "invalid config"}
+	connection.Spec.Sources = []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}
+	connection.Generation++
+	require.NoError(t, k8sClient.Update(t.Context(), connection))
+	_, err = reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	for _, source := range []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource, connectionv1alpha1.RuntimeSource} {
+		require.Error(t, system.Publish(t.Context(), source, connection.Name, "runtime", finding))
+	}
+
+	connection.Spec.Config = validConfig
+	connection.Spec.Sources = nil
+	connection.Annotations = map[string]string{connectionv1alpha1.RuntimeSourceAnnotation: string(connectionv1alpha1.RuntimeSource)}
+	connection.Generation++
+	require.NoError(t, k8sClient.Update(t.Context(), connection))
+	_, err = reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.RuntimeSource, connection.Name, "runtime", finding))
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.WebhookSource, connection.Name, "runtime", finding))
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.AuditSource, connection.Name, "runtime", finding))
+
+	reconciler.runtimeExportEnabled = false
+	_, err = reconciler.Reconcile(t.Context(), request)
+	require.NoError(t, err)
+	for _, source := range []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource, connectionv1alpha1.RuntimeSource} {
+		require.Error(t, system.Publish(t.Context(), source, connection.Name, "runtime", finding))
+	}
+}
+
+func TestUpdateConnectionPodPublishStatusForConnectionRejectsStaleOutcomes(t *testing.T) {
+	testutils.Setenv(t, "POD_NAMESPACE", "gatekeeper-system")
+	testScheme := runtime.NewScheme()
+	require.NoError(t, connectionv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, statusv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, corev1.AddToScheme(testScheme))
+	for _, change := range []string{"generation", "uid", "annotation source revoked"} {
+		t.Run(change, func(t *testing.T) {
+			connection := &connectionv1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "runtime-connection", Namespace: "gatekeeper-system", UID: "connection-uid", Generation: 1,
+					Annotations: map[string]string{connectionv1alpha1.RuntimeSourceAnnotation: string(connectionv1alpha1.RuntimeSource)},
+				},
+			}
+			observed := connection.DeepCopy()
+			switch change {
+			case "generation":
+				connection.Generation++
+			case "uid":
+				connection.UID = "replacement-uid"
+			case "annotation source revoked":
+				connection.Annotations = nil
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(connection).Build()
+			err := UpdateConnectionPodPublishStatusForConnection(t.Context(), k8sClient, k8sClient, testScheme, observed,
+				statusv1alpha1.ConnectionPublishStatus{Source: statusv1alpha1.RuntimePublishSource, Active: true},
+				func(context.Context) (*corev1.Pod, error) {
+					return fakes.Pod(fakes.WithNamespace("gatekeeper-system"), fakes.WithName("runtime-pod")), nil
+				},
+			)
+			require.ErrorIs(t, err, ErrStaleConnectionPublishStatus)
+			statuses := &statusv1alpha1.ConnectionPodStatusList{}
+			require.NoError(t, k8sClient.List(t.Context(), statuses))
+			require.Empty(t, statuses.Items)
+		})
+	}
+}
+
+func TestConnectionPodStatusResetsAfterConnectionRecreation(t *testing.T) {
+	testutils.Setenv(t, "POD_NAMESPACE", "gatekeeper-system")
+	testScheme := runtime.NewScheme()
+	require.NoError(t, connectionv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, statusv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, corev1.AddToScheme(testScheme))
+	for _, publisher := range []bool{false, true} {
+		t.Run(fmt.Sprintf("publisher=%t", publisher), func(t *testing.T) {
+			connection := &connectionv1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "recreated", Namespace: util.GetNamespace(), UID: "old-uid", Generation: 1},
+				Spec:       connectionv1alpha1.ConnectionSpec{Sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}},
+			}
+			pod := fakes.Pod(fakes.WithNamespace(util.GetNamespace()), fakes.WithName("runtime-pod"))
+			oldStatus, err := newConnectionPodStatus(testScheme, pod, connection)
+			require.NoError(t, err)
+			oldStatus.Status.ObservedGeneration = connection.Generation
+			oldStatus.Status.ConnectionErrors = []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: "old configuration failed"}}
+			oldSuccess := metav1.NewTime(time.Unix(1, 0))
+			oldStatus.Status.PublishStatuses = []statusv1alpha1.ConnectionPublishStatus{
+				{Source: statusv1alpha1.AuditPublishSource, Active: true},
+				{Source: statusv1alpha1.RuntimePublishSource, Active: true, LastSuccessTime: &oldSuccess},
+			}
+			// A coalesced delete/create may leave the old pod status behind even
+			// though the same-name Connection starts again at generation one.
+			connection.UID = "new-uid"
+			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(connection, oldStatus).Build()
+			getPod := func(context.Context) (*corev1.Pod, error) { return pod, nil }
+			var expected []statusv1alpha1.ConnectionPublishStatus
+			if publisher {
+				status := statusv1alpha1.ConnectionPublishStatus{Source: statusv1alpha1.RuntimePublishSource}
+				err = UpdateConnectionPodPublishStatusForConnection(t.Context(), k8sClient, k8sClient, testScheme, connection, status, getPod)
+				expected = []statusv1alpha1.ConnectionPublishStatus{status}
+			} else {
+				err = UpdateOrCreateConnectionPodStatus(t.Context(), k8sClient, k8sClient, testScheme, connection.Name, nil, getPod)
+			}
+			require.NoError(t, err)
+			latest := &statusv1alpha1.ConnectionPodStatus{}
+			require.NoError(t, k8sClient.Get(t.Context(), client.ObjectKeyFromObject(oldStatus), latest))
+			require.Equal(t, connection.UID, latest.Status.ConnectionUID)
+			require.Equal(t, connection.Generation, latest.Status.ObservedGeneration)
+			require.Empty(t, latest.Status.ConnectionErrors)
+			require.Equal(t, expected, latest.Status.PublishStatuses)
+		})
+	}
+}
+
 type conflictOnceWriter struct {
 	client.Client
 	onConflict func(context.Context) error
@@ -940,7 +1121,7 @@ type FakeExportSystem struct {
 	CloseConnectionError        error
 }
 
-func (f *FakeExportSystem) Publish(_ context.Context, _ string, _ string, _ interface{}) error {
+func (f *FakeExportSystem) Publish(_ context.Context, _ connectionv1alpha1.ConnectionSource, _ string, _ string, _ interface{}) error {
 	f.PublishCalledCount++
 	if f.PublishError != nil {
 		return f.PublishError
@@ -948,7 +1129,7 @@ func (f *FakeExportSystem) Publish(_ context.Context, _ string, _ string, _ inte
 	return nil
 }
 
-func (f *FakeExportSystem) UpsertConnection(_ context.Context, _ interface{}, _ string, _ string) error {
+func (f *FakeExportSystem) UpsertConnection(_ context.Context, _ *connectionv1alpha1.Connection) error {
 	f.UpsertConnectionCalledCount++
 	if f.UpsertConnectionError != nil {
 		return f.UpsertConnectionError

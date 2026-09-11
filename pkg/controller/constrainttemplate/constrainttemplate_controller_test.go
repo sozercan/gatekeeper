@@ -1738,9 +1738,7 @@ func TestReconcile(t *testing.T) {
 
 		logger.Info("Running test: Review request initiated from an enforcement point not supported by client should result in error")
 		constraintTemplate := makeReconcileConstraintTemplate(suffix)
-		cstr := newDenyAllCstrWithScopedEA(suffix, util.WebhookEnforcementPoint)
 
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
 		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
 		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
 

@@ -2,11 +2,15 @@ package dapr
 
 import (
 	"context"
+	"net"
 	"os"
 	"testing"
 
+	pb "github.com/dapr/go-sdk/dapr/proto/runtime/v1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/driver"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 var testClient driver.Driver
@@ -160,4 +164,42 @@ func TestDapr_Update(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDaprConnectionsHaveIndependentLifecycles(t *testing.T) {
+	const componentKey = "component"
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	pb.RegisterDaprServer(server, &testDaprServer{})
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	t.Setenv("DAPR_GRPC_PORT", port)
+
+	connections := &Dapr{openConnections: make(map[string]Connection)}
+	t.Cleanup(func() {
+		for name := range connections.openConnections {
+			require.NoError(t, connections.CloseConnection(name))
+		}
+	})
+	config := map[string]interface{}{componentKey: "pubsub"}
+	for _, name := range []string{"first", "second"} {
+		require.NoError(t, connections.CreateConnection(t.Context(), name, config))
+		require.NoError(t, connections.Publish(t.Context(), name, "before close", "runtime"))
+	}
+
+	require.NoError(t, connections.CloseConnection("first"))
+	require.NoError(t, connections.Publish(t.Context(), "second", "after peer close", "runtime"))
+	require.NoError(t, connections.CreateConnection(t.Context(), "first", config))
+	require.NoError(t, connections.Publish(t.Context(), "first", "after recreate", "runtime"))
+	require.NoError(t, connections.UpdateConnection(t.Context(), "second", map[string]interface{}{componentKey: "other"}))
+	require.NoError(t, connections.CloseConnection("second"))
+	require.NoError(t, connections.Publish(t.Context(), "first", "after second peer close", "runtime"))
+
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.Error(t, connections.CreateConnection(canceled, "canceled", config))
+	require.NotContains(t, connections.openConnections, "canceled")
 }

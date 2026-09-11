@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	statusv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1alpha1"
 	exportutil "github.com/open-policy-agent/gatekeeper/v3/pkg/export/util"
 	"github.com/stretchr/testify/require"
@@ -22,7 +23,7 @@ type fakeAdmissionExportSystem struct {
 	publish    func(context.Context, interface{}) error
 }
 
-func (f *fakeAdmissionExportSystem) Publish(ctx context.Context, _, _ string, message interface{}) error {
+func (f *fakeAdmissionExportSystem) Publish(ctx context.Context, _ connectionv1alpha1.ConnectionSource, _, _ string, message interface{}) error {
 	if f.publish != nil {
 		return f.publish(ctx, message)
 	}
@@ -32,7 +33,7 @@ func (f *fakeAdmissionExportSystem) Publish(ctx context.Context, _, _ string, me
 	return f.publishErr
 }
 
-func (f *fakeAdmissionExportSystem) UpsertConnection(context.Context, interface{}, string, string) error {
+func (f *fakeAdmissionExportSystem) UpsertConnection(context.Context, *connectionv1alpha1.Connection) error {
 	return nil
 }
 

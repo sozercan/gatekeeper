@@ -35,12 +35,14 @@ import (
 
 var ErrInvalidRuntimeConstraint = errors.New("invalid runtime Constraint")
 
-var namespaceExclusionPattern = regexp.MustCompile(`^\*?[-:a-z0-9]*\*?$`)
+var namespaceExclusionPattern = regexp.MustCompile(`^\*?[a-z0-9-]*\*?$`)
 
 const (
-	maxAtespacePatterns = 32
-	maxAtespaceLength   = 63
-	maxSubjectNames     = 64
+	maxAtespacePatterns         = 32
+	maxAtespaceLength           = 63
+	maxSubjectNames             = 64
+	maxNamespaceExclusions      = 256
+	maxNamespaceExclusionLength = 65
 )
 
 // ParsedConstraint is a validated runtime Constraint ready for projection.
@@ -199,23 +201,30 @@ func validateKubernetesSubject(subject *KubernetesSubject) error {
 		}
 		seenTypes[containerType] = struct{}{}
 	}
-	if len(subject.ExcludedNamespaces) > 256 {
-		return fmt.Errorf("spec.match.subject.kubernetes.excludedNamespaces has %d entries; maximum is 256", len(subject.ExcludedNamespaces))
-	}
-	seenNamespaces := make(map[string]struct{}, len(subject.ExcludedNamespaces))
-	for i, namespace := range subject.ExcludedNamespaces {
-		if len(namespace) > 253 || !namespaceExclusionPattern.MatchString(namespace) {
-			return fmt.Errorf("spec.match.subject.kubernetes.excludedNamespaces[%d] must be an exact namespace or a prefix/suffix wildcard", i)
-		}
-		if _, found := seenNamespaces[namespace]; found {
-			return fmt.Errorf("spec.match.subject.kubernetes.excludedNamespaces[%d] duplicates %q", i, namespace)
-		}
-		seenNamespaces[namespace] = struct{}{}
+	if err := validateNamespaceExclusions("spec.match.subject.kubernetes.excludedNamespaces", subject.ExcludedNamespaces); err != nil {
+		return err
 	}
 	if err := validateDNSNames("spec.match.subject.kubernetes.runtimeClassNames", subject.RuntimeClassNames, utilvalidation.IsDNS1123Subdomain); err != nil {
 		return err
 	}
 	return validateDNSNames("spec.match.subject.kubernetes.containerNames", subject.ContainerNames, utilvalidation.IsDNS1123Label)
+}
+
+func validateNamespaceExclusions(path string, exclusions []string) error {
+	if len(exclusions) > maxNamespaceExclusions {
+		return fmt.Errorf("%s has %d entries; maximum is %d", path, len(exclusions), maxNamespaceExclusions)
+	}
+	seenNamespaces := make(map[string]struct{}, len(exclusions))
+	for i, namespace := range exclusions {
+		if namespace == "" || len(namespace) > maxNamespaceExclusionLength || !namespaceExclusionPattern.MatchString(namespace) {
+			return fmt.Errorf("%s[%d] must contain 1 to %d bytes and be an exact namespace or a prefix/suffix wildcard", path, i, maxNamespaceExclusionLength)
+		}
+		if _, found := seenNamespaces[namespace]; found {
+			return fmt.Errorf("%s[%d] duplicates %q", path, i, namespace)
+		}
+		seenNamespaces[namespace] = struct{}{}
+	}
+	return nil
 }
 
 func validateSubstrateSubject(subject *SubstrateSubject) error {

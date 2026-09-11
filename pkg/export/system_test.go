@@ -3,24 +3,46 @@ package export
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/dapr"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/disk"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/driver"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export/testdriver"
 	exportutil "github.com/open-policy-agent/gatekeeper/v3/pkg/export/util"
+	anythingtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+const (
+	recordingDriverName                                     = "recording"
+	unsupportedSource   connectionv1alpha1.ConnectionSource = "unknown-source"
 )
 
 var testSystem *System
 
+func systemTestConnection(name, driver string, config interface{}, sources ...connectionv1alpha1.ConnectionSource) *connectionv1alpha1.Connection {
+	return &connectionv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: connectionv1alpha1.ConnectionSpec{
+			Driver: driver, Config: &anythingtypes.Anything{Value: config}, Sources: sources,
+		},
+	}
+}
+
 type recordingDriver struct {
 	published []any
+	updateErr error
 }
 
 func (driver *recordingDriver) Publish(_ context.Context, _ string, data interface{}, _ string) error {
@@ -30,7 +52,9 @@ func (driver *recordingDriver) Publish(_ context.Context, _ string, data interfa
 
 func (*recordingDriver) CloseConnection(string) error { return nil }
 
-func (*recordingDriver) UpdateConnection(context.Context, string, interface{}) error { return nil }
+func (driver *recordingDriver) UpdateConnection(context.Context, string, interface{}) error {
+	return driver.updateErr
+}
 
 func (*recordingDriver) CreateConnection(context.Context, string, interface{}) error { return nil }
 
@@ -47,6 +71,7 @@ func TestMain(m *testing.M) {
 	}
 	for name, fakeConn := range supportedDrivers {
 		testSystem.connectionToDriver[name] = name
+		testSystem.connectionSources[name] = []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource}
 		_ = fakeConn.CreateConnection(ctx, name, cfg[name])
 	}
 	r := m.Run()
@@ -69,6 +94,8 @@ func TestNewSystem(t *testing.T) {
 			name: "requesting system",
 			want: &System{
 				connectionToDriver: map[string]string{},
+				connectionSources:  map[string][]connectionv1alpha1.ConnectionSource{},
+				connectionIdentity: map[string]connectionIdentity{},
 			},
 		},
 	}
@@ -145,7 +172,7 @@ func TestSystem_UpsertConnection(t *testing.T) {
 				t.Fatalf("failed to setup test: %v", err)
 			}
 
-			err := system.UpsertConnection(ctx, tt.config, tt.connectionName, tt.newDriver)
+			err := system.UpsertConnection(ctx, systemTestConnection(tt.connectionName, tt.newDriver, tt.config))
 			if (err != nil) != tt.wantErr {
 				t.Errorf("UpsertConnection() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -252,8 +279,9 @@ func TestSystem_Publish(t *testing.T) {
 			s := &System{
 				mux:                sync.RWMutex{},
 				connectionToDriver: tt.fields.connections,
+				connectionSources:  map[string][]connectionv1alpha1.ConnectionSource{"dapr": {connectionv1alpha1.AuditSource}},
 			}
-			if err := s.Publish(tt.args.ctx, tt.args.connection, tt.args.topic, tt.args.msg); (err != nil) != tt.wantErr {
+			if err := s.Publish(tt.args.ctx, connectionv1alpha1.AuditSource, tt.args.connection, tt.args.topic, tt.args.msg); (err != nil) != tt.wantErr {
 				t.Errorf("System.Publish() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -261,16 +289,18 @@ func TestSystem_Publish(t *testing.T) {
 }
 
 func TestSystemPublishBatchFallbackPreservesMessageTypes(t *testing.T) {
-	const driverName = "recording"
 	recorder := &recordingDriver{}
 	oldDrivers := supportedDrivers
-	supportedDrivers = map[string]driver.Driver{driverName: recorder}
+	supportedDrivers = map[string]driver.Driver{recordingDriverName: recorder}
 	t.Cleanup(func() { supportedDrivers = oldDrivers })
-	system := &System{connectionToDriver: map[string]string{"connection": driverName}}
+	system := &System{
+		connectionToDriver: map[string]string{"connection": recordingDriverName},
+		connectionSources:  map[string][]connectionv1alpha1.ConnectionSource{"connection": {connectionv1alpha1.WebhookSource}},
+	}
 	raw := json.RawMessage(`{"eventType":"violation_admission"}`)
 	typed := exportutil.ExportMsg{ID: "audit-1", Message: exportutil.AuditStartedMsg}
 
-	errorsByMessage := system.PublishBatch(context.Background(), "connection", "topic", []any{raw, typed})
+	errorsByMessage := system.PublishBatch(context.Background(), connectionv1alpha1.WebhookSource, "connection", "topic", []any{raw, typed})
 
 	assert.Len(t, errorsByMessage, 2)
 	assert.NoError(t, errorsByMessage[0])
@@ -291,19 +321,19 @@ func TestSystemSupportsAuditAndAdmissionOnSharedDiskConnection(t *testing.T) {
 		"path":            path,
 		"maxAuditResults": float64(1),
 	}
-	if err := system.UpsertConnection(ctx, config, connectionName, disk.Name); err != nil {
+	if err := system.UpsertConnection(ctx, systemTestConnection(connectionName, disk.Name, config)); err != nil {
 		t.Fatalf("UpsertConnection() error = %v", err)
 	}
 	t.Cleanup(func() { _ = system.CloseConnection(connectionName) })
 
-	if err := system.Publish(ctx, connectionName, "audit", exportutil.ExportMsg{ID: "audit-1", Message: exportutil.AuditStartedMsg}); err != nil {
+	if err := system.Publish(ctx, connectionv1alpha1.AuditSource, connectionName, "audit", exportutil.ExportMsg{ID: "audit-1", Message: exportutil.AuditStartedMsg}); err != nil {
 		t.Fatalf("Publish(audit start) error = %v", err)
 	}
 	admission, err := json.Marshal(exportutil.ExportMsg{EventType: exportutil.AdmissionViolationEventType, ResourceName: "denied-pod"})
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
-	batchResults := system.PublishBatch(ctx, connectionName, "audit", []any{
+	batchResults := system.PublishBatch(ctx, connectionv1alpha1.WebhookSource, connectionName, "audit", []any{
 		json.RawMessage(admission),
 		exportutil.ExportMsg{EventType: exportutil.AdmissionViolationEventType, ResourceName: "second-denied-pod"},
 	})
@@ -312,7 +342,7 @@ func TestSystemSupportsAuditAndAdmissionOnSharedDiskConnection(t *testing.T) {
 			t.Fatalf("PublishBatch(admission) result %d error = %v", i, result)
 		}
 	}
-	if err := system.Publish(ctx, connectionName, "audit", exportutil.ExportMsg{ID: "audit-1", Message: exportutil.AuditCompletedMsg}); err != nil {
+	if err := system.Publish(ctx, connectionv1alpha1.AuditSource, connectionName, "audit", exportutil.ExportMsg{ID: "audit-1", Message: exportutil.AuditCompletedMsg}); err != nil {
 		t.Fatalf("Publish(audit end) error = %v", err)
 	}
 
@@ -329,6 +359,65 @@ func TestSystemSupportsAuditAndAdmissionOnSharedDiskConnection(t *testing.T) {
 	}
 	if !foundAdmission {
 		t.Fatalf("expected admission-prefixed file, got %v", files)
+	}
+}
+
+func TestSystemAllowsRuntimeChannelForAuditAndAdmission(t *testing.T) {
+	oldDrivers := supportedDrivers
+	supportedDrivers = map[string]driver.Driver{disk.Name: disk.Connections}
+	t.Cleanup(func() { supportedDrivers = oldDrivers })
+
+	system := NewSystem()
+	const connectionName = "audit-runtime-channel"
+	const subject = "runtime"
+	path := t.TempDir()
+	require.NoError(t, system.UpsertConnection(t.Context(), systemTestConnection(connectionName, disk.Name, map[string]interface{}{
+		"path":            path,
+		"maxAuditResults": float64(1),
+	}, connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource)))
+	t.Cleanup(func() { require.NoError(t, system.CloseConnection(connectionName)) })
+
+	admission := exportutil.ExportMsg{EventType: exportutil.AdmissionViolationEventType, ResourceName: "denied-pod"}
+	rawAdmission, err := json.Marshal(admission)
+	require.NoError(t, err)
+	for _, auditID := range []string{"audit-1", "audit-2"} {
+		auditRecords := []exportutil.ExportMsg{
+			{ID: auditID, Message: exportutil.AuditStartedMsg},
+			{ID: auditID, Message: "missing required label", ResourceName: "existing-pod"},
+			{ID: auditID, Message: exportutil.AuditCompletedMsg},
+		}
+		require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.AuditSource, connectionName, subject, auditRecords[0]))
+		require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.WebhookSource, connectionName, subject, admission))
+		for _, result := range system.PublishBatch(t.Context(), connectionv1alpha1.WebhookSource, connectionName, subject, []any{json.RawMessage(rawAdmission), admission}) {
+			require.NoError(t, result)
+		}
+		for _, record := range auditRecords[1:] {
+			require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.AuditSource, connectionName, subject, record))
+		}
+		data, err := os.ReadFile(filepath.Join(path, subject, auditID+".log"))
+		require.NoError(t, err, "the channel name must not change audit file handling")
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		require.Len(t, lines, len(auditRecords))
+		for index, line := range lines {
+			var record exportutil.ExportMsg
+			require.NoError(t, json.Unmarshal([]byte(line), &record))
+			require.Equal(t, auditRecords[index], record)
+		}
+	}
+
+	require.NoFileExists(t, filepath.Join(path, subject, "audit-1.log"), "audit retention must still apply")
+	require.FileExists(t, filepath.Join(path, subject, "audit-2.log"))
+	files, err := filepath.Glob(filepath.Join(path, subject, "admission-*"))
+	require.NoError(t, err)
+	require.Len(t, files, 1, "admission must keep its separate spool")
+	data, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 6)
+	for _, line := range lines {
+		var record exportutil.ExportMsg
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		require.Equal(t, admission, record, "audit records must not enter the admission spool")
 	}
 }
 
@@ -394,5 +483,181 @@ func TestSystem_closeConnection(t *testing.T) {
 				t.Errorf("connection %s should have been deleted from map", tt.args.connectionName)
 			}
 		})
+	}
+}
+
+type recordingBatchDriver struct{ recordingDriver }
+
+func (driver *recordingBatchDriver) PublishBatch(_ context.Context, _ string, messages []any, _ string) []error {
+	driver.published = append(driver.published, messages...)
+	return make([]error, len(messages))
+}
+
+func TestSystemEnforcesProducerSourcesIndependentlyOfSubject(t *testing.T) {
+	oldDrivers := supportedDrivers
+	t.Cleanup(func() { supportedDrivers = oldDrivers })
+	tests := []struct {
+		name    string
+		sources []connectionv1alpha1.ConnectionSource
+		allowed []connectionv1alpha1.ConnectionSource
+	}{
+		{name: "omitted", allowed: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource}},
+		{name: "audit", sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource}, allowed: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource}},
+		{name: "webhook", sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.WebhookSource}, allowed: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.WebhookSource}},
+		{name: "audit and webhook", sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource}, allowed: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource}},
+		{name: "runtime", sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}, allowed: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}},
+	}
+	for _, batched := range []bool{false, true} {
+		for _, test := range tests {
+			t.Run(fmt.Sprintf("%s/batched=%t", test.name, batched), func(t *testing.T) {
+				recorder := &recordingDriver{}
+				var backend driver.Driver = recorder
+				if batched {
+					batch := &recordingBatchDriver{}
+					backend = batch
+					recorder = &batch.recordingDriver
+				}
+				supportedDrivers = map[string]driver.Driver{recordingDriverName: backend}
+				system := NewSystem()
+				require.NoError(t, system.UpsertConnection(t.Context(), systemTestConnection("shared-name", recordingDriverName, nil, test.sources...)))
+				for _, source := range []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource, connectionv1alpha1.RuntimeSource, "", unsupportedSource} {
+					for _, subject := range []string{"audit-channel", "runtime"} {
+						before := len(recorder.published)
+						publishErr := system.Publish(t.Context(), source, "shared-name", subject, "single")
+						batchErrors := system.PublishBatch(t.Context(), source, "shared-name", subject, []any{"first", "second"})
+						require.Len(t, batchErrors, 2)
+						if slices.Contains(test.allowed, source) {
+							require.NoError(t, publishErr)
+							require.NoError(t, batchErrors[0])
+							require.NoError(t, batchErrors[1])
+							require.Len(t, recorder.published, before+3)
+						} else {
+							require.Error(t, publishErr)
+							require.Error(t, batchErrors[0])
+							require.Error(t, batchErrors[1])
+							require.Len(t, recorder.published, before, "disallowed source reached the backend")
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSystemSourceChangesAndInvalidReconfigurationRevokePublishing(t *testing.T) {
+	oldDrivers := supportedDrivers
+	t.Cleanup(func() { supportedDrivers = oldDrivers })
+	recorder := &recordingDriver{}
+	supportedDrivers = map[string]driver.Driver{recordingDriverName: recorder}
+	system := NewSystem()
+	require.NoError(t, system.UpsertConnection(t.Context(), systemTestConnection("shared-name", recordingDriverName, nil)))
+	require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.AuditSource, "shared-name", "runtime", "audit"))
+	require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.WebhookSource, "shared-name", "runtime", "admission"))
+
+	sources := []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}
+	require.NoError(t, system.UpsertConnection(t.Context(), systemTestConnection("shared-name", recordingDriverName, nil, sources...)))
+	sources[0] = connectionv1alpha1.AuditSource
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.AuditSource, "shared-name", "runtime", "audit"))
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.WebhookSource, "shared-name", "runtime", "admission"))
+	require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.RuntimeSource, "shared-name", "runtime", "runtime"))
+
+	for _, failure := range []struct {
+		name      string
+		driver    string
+		sources   []connectionv1alpha1.ConnectionSource
+		updateErr error
+	}{
+		{name: "invalid config", driver: recordingDriverName, sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource}, updateErr: errors.New("invalid config")},
+		{name: "unsupported driver", driver: "unknown", sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource}},
+		{name: "mixed runtime sources", driver: recordingDriverName, sources: []connectionv1alpha1.ConnectionSource{connectionv1alpha1.RuntimeSource, connectionv1alpha1.WebhookSource}},
+		{name: "unknown source", driver: recordingDriverName, sources: []connectionv1alpha1.ConnectionSource{unsupportedSource}},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			recorder.updateErr = failure.updateErr
+			require.Error(t, system.UpsertConnection(t.Context(), systemTestConnection("shared-name", failure.driver, nil, failure.sources...)))
+			before := len(recorder.published)
+			for _, source := range []connectionv1alpha1.ConnectionSource{connectionv1alpha1.AuditSource, connectionv1alpha1.WebhookSource, connectionv1alpha1.RuntimeSource} {
+				require.Error(t, system.Publish(t.Context(), source, "shared-name", "runtime", "stale"))
+				results := system.PublishBatch(t.Context(), source, "shared-name", "runtime", []any{"stale"})
+				require.Len(t, results, 1)
+				require.Error(t, results[0])
+			}
+			require.Len(t, recorder.published, before)
+			recorder.updateErr = nil
+			require.NoError(t, system.UpsertConnection(t.Context(), systemTestConnection("shared-name", recordingDriverName, nil, connectionv1alpha1.RuntimeSource)))
+			require.NoError(t, system.Publish(t.Context(), connectionv1alpha1.RuntimeSource, "shared-name", "runtime", "recovered"))
+		})
+	}
+	require.NoError(t, system.CloseConnection("shared-name"))
+	require.Error(t, system.Publish(t.Context(), connectionv1alpha1.RuntimeSource, "shared-name", "runtime", "closed"))
+}
+
+func TestSystemConnectionBatchRequiresInitializedVersion(t *testing.T) {
+	oldDrivers := supportedDrivers
+	supportedDrivers = map[string]driver.Driver{disk.Name: disk.Connections}
+	t.Cleanup(func() { supportedDrivers = oldDrivers })
+	system := NewSystem()
+	path := t.TempDir()
+	connection := systemTestConnection("versioned-runtime", disk.Name, map[string]any{
+		"path": path, "maxAuditResults": float64(3),
+	}, connectionv1alpha1.RuntimeSource)
+	connection.Namespace, connection.UID, connection.Generation = "gatekeeper-system", "original-uid", 1
+	require.NoError(t, system.UpsertConnection(t.Context(), connection))
+	t.Cleanup(func() { require.NoError(t, system.CloseConnection(connection.Name)) })
+	messages := []any{exportutil.RuntimeFinding(`{"sequence":1}`), exportutil.RuntimeFinding(`{"sequence":2}`)}
+	publish := func(connection *connectionv1alpha1.Connection) []error {
+		return system.PublishBatchForConnection(t.Context(), connectionv1alpha1.RuntimeSource, connection, "runtime", messages)
+	}
+	for _, err := range publish(connection) {
+		require.NoError(t, err)
+	}
+	for _, change := range []string{"namespace", "uid", "generation", "name", "missing"} {
+		t.Run(change, func(t *testing.T) {
+			requested := connection.DeepCopy()
+			switch change {
+			case "namespace":
+				requested.Namespace = "different-namespace"
+			case "uid":
+				requested.UID = "replacement-uid"
+			case "generation":
+				requested.Generation++
+			case "name":
+				requested.Name = "different-name"
+			case "missing":
+				requested = nil
+			}
+			results := publish(requested)
+			require.Len(t, results, len(messages))
+			for _, err := range results {
+				require.Error(t, err)
+			}
+		})
+	}
+	files, err := filepath.Glob(filepath.Join(path, "runtime", "*.open"))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	data, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	require.Equal(t, "{\"sequence\":1}\n{\"sequence\":2}\n", string(data), "mismatched versions must never reach the backend")
+
+	old := connection.DeepCopy()
+	connection.UID = "replacement-uid"
+	for _, err := range publish(connection) {
+		require.Error(t, err, "mutating the source object must not change initialized identity")
+	}
+	require.NoError(t, system.UpsertConnection(t.Context(), connection))
+	for _, err := range publish(connection) {
+		require.NoError(t, err)
+	}
+	for _, err := range publish(old) {
+		require.Error(t, err)
+	}
+	connection.Generation++
+	connection.Spec.Config.Value = "invalid config"
+	require.Error(t, system.UpsertConnection(t.Context(), connection))
+	for _, requested := range []*connectionv1alpha1.Connection{connection, old} {
+		for _, err := range publish(requested) {
+			require.Error(t, err, "failed reconfiguration must revoke every initialized identity")
+		}
 	}
 }

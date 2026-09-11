@@ -18,6 +18,7 @@ import (
 	"github.com/go-logr/logr"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/client/reviews"
+	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	statusv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1alpha1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
 	exportController "github.com/open-policy-agent/gatekeeper/v3/pkg/controller/export"
@@ -266,7 +267,7 @@ func (am *Manager) audit(ctx context.Context) error {
 		Errors:       make(map[string]error),
 	}
 	if *exportutil.ExportEnabled {
-		err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, exportutil.ExportMsg{Message: exportutil.AuditStartedMsg, ID: timestamp})
+		err := am.exportSystem.Publish(context.Background(), connectionv1alpha1.AuditSource, *exportutil.AuditConnection, *exportutil.AuditChannel, exportutil.ExportMsg{Message: exportutil.AuditStartedMsg, ID: timestamp})
 		auditExportPublishingState.recordPublishResult(err)
 		if err != nil {
 			am.log.Error(err, "failed to export audit start message")
@@ -284,7 +285,7 @@ func (am *Manager) audit(ctx context.Context) error {
 			am.log.Error(err, "failed to report run end time")
 		}
 		if *exportutil.ExportEnabled {
-			err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, exportutil.ExportMsg{Message: exportutil.AuditCompletedMsg, ID: timestamp})
+			err := am.exportSystem.Publish(context.Background(), connectionv1alpha1.AuditSource, *exportutil.AuditConnection, *exportutil.AuditChannel, exportutil.ExportMsg{Message: exportutil.AuditCompletedMsg, ID: timestamp})
 			auditExportPublishingState.recordPublishResult(err)
 			if err != nil {
 				am.log.Error(err, "failed to export audit end message")
@@ -928,7 +929,7 @@ func (am *Manager) addAuditResponsesToUpdateLists(
 		labels := r.obj.GetLabels()
 		logViolation(am.log, constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels)
 		if *exportutil.ExportEnabled {
-			err := am.exportSystem.Publish(context.Background(), *exportutil.AuditConnection, *exportutil.AuditChannel, violationMsg(constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels, timestamp))
+			err := am.exportSystem.Publish(context.Background(), connectionv1alpha1.AuditSource, *exportutil.AuditConnection, *exportutil.AuditChannel, violationMsg(constraint, ea, r.ScopedEnforcementActions, gvk, namespace, name, msg, details, labels, timestamp))
 			auditExportPublishingState.recordPublishResult(err)
 		}
 		if *emitAuditEvents {

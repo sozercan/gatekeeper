@@ -16,6 +16,7 @@ limitations under the License.
 package runtimepolicy
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -48,6 +49,78 @@ func TestMatchSchemaOnlyExposesSubject(t *testing.T) {
 	}
 	if _, found := properties["subject"]; !found {
 		t.Fatal("match schema does not expose subject")
+	}
+}
+
+func TestNamespaceExclusionsMatchRuntimePolicyBounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "namespace", value: "production"},
+		{name: "prefix wildcard", value: "prod-*"},
+		{name: "suffix wildcard", value: "*-system"},
+		{name: "maximum length", value: "*" + strings.Repeat("n", 63) + "*"},
+		{name: "empty", value: "", wantErr: true},
+		{name: "colon", value: "ns:test", wantErr: true},
+		{name: "too long", value: strings.Repeat("n", 66), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			constraint := runtimeConstraintWithSubject(map[string]interface{}{
+				"kubernetes": map[string]interface{}{"excludedNamespaces": []interface{}{test.value}},
+			})
+			_, err := ParseConstraint(constraint)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("ParseConstraint() error = %v, want error %v", err, test.wantErr)
+			}
+		})
+	}
+	schema := matchSchema().Properties["subject"].Properties["kubernetes"].Properties["excludedNamespaces"].Items.Schema
+	if schema.MinLength == nil || *schema.MinLength != 1 || schema.MaxLength == nil || *schema.MaxLength != maxNamespaceExclusionLength || schema.Pattern != namespaceExclusionPattern.String() {
+		t.Fatalf("namespace exclusion schema does not match validation: %+v", schema)
+	}
+}
+
+func TestConfiguredNamespaceExclusionsStayWithinRuntimePolicyBounds(t *testing.T) {
+	declared := make([]interface{}, maxNamespaceExclusions)
+	for i := range declared {
+		declared[i] = "namespace-" + strconv.Itoa(i)
+	}
+	constraint := runtimeConstraintWithSubject(map[string]interface{}{
+		"kubernetes": map[string]interface{}{"excludedNamespaces": declared},
+	})
+	tests := []struct {
+		name       string
+		configured []string
+		wantErr    string
+	}{
+		{name: "no configured exclusions"},
+		{name: "deduplicated boundary", configured: []string{"namespace-0"}},
+		{name: "merged overflow", configured: []string{"extra"}, wantErr: "maximum is 256"},
+		{name: "invalid configured pattern", configured: []string{"invalid:namespace"}, wantErr: "maximum is 256"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			driver := NewDriver(nil, nil, func() []string { return test.configured })
+			if err := driver.AddTemplate(context.Background(), runtimeTemplate()); err != nil {
+				t.Fatal(err)
+			}
+			for name, validate := range map[string]func() error{
+				"admission": func() error { return NewTarget(driver).ValidateConstraint(constraint) },
+				"cache":     func() error { return driver.AddConstraint(context.Background(), constraint) },
+				"projection": func() error {
+					_, _, err := driver.ReconcileConstraint(context.Background(), constraint)
+					return err
+				},
+			} {
+				err := validate()
+				if test.wantErr == "" && err != nil || test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+					t.Fatalf("%s error = %v, want %q", name, err, test.wantErr)
+				}
+			}
+		})
 	}
 }
 

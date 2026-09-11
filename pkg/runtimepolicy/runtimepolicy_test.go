@@ -18,6 +18,7 @@ package runtimepolicy
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,6 +110,79 @@ func TestParseConstraintMapsEnforcementAndRejectsUnknownPolicyFields(t *testing.
 	_ = unstructured.SetNestedMap(constraint.Object, parameters, "spec", "parameters")
 	if _, err := ParseConstraint(constraint); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("ParseConstraint(unknown field) error = %v", err)
+	}
+}
+
+func TestProjectionNormalizesOptionalParameterDefaults(t *testing.T) {
+	constraint := runtimeConstraint("deny")
+	parameters := map[string]interface{}{
+		"failurePolicy": "",
+		"behaviors": map[string]interface{}{
+			"process":  map[string]interface{}{"defaultAction": ""},
+			"file":     map[string]interface{}{"defaultAction": ""},
+			"network":  map[string]interface{}{"defaultAction": ""},
+			"protocol": map[string]interface{}{"defaultAction": ""},
+			"observation": map[string]interface{}{
+				"dns": true,
+				"arguments": map[string]interface{}{
+					"enabled": true, "maxArguments": int64(0),
+					"maxBytesPerArgument": int64(0), "maxTotalBytes": int64(0),
+				},
+			},
+		},
+		"dynamicSources": []interface{}{
+			map[string]interface{}{
+				"name": "tools", "outputType": "Executable", "required": false,
+				"projection": map[string]interface{}{"action": "Deny"},
+				"httpRef":    map[string]interface{}{"url": "https://example.test/tools", "ttlSeconds": int64(0)},
+			},
+		},
+		"staleDataPolicy": map[string]interface{}{"action": "", "maxStalenessSeconds": int64(0)},
+		"resourceLimits":  map[string]interface{}{"maxCompiledEntries": int64(0)},
+	}
+	if err := unstructured.SetNestedMap(constraint.Object, parameters, "spec", "parameters"); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := buildRuntimePolicy(constraint)
+	if err != nil {
+		t.Fatalf("buildRuntimePolicy() error = %v", err)
+	}
+	for _, path := range [][]string{
+		{"failurePolicy"},
+		{"behaviors", "process", "defaultAction"},
+		{"behaviors", "file", "defaultAction"},
+		{"behaviors", "network", "defaultAction"},
+		{"behaviors", "protocol", "defaultAction"},
+		{"behaviors", "observation", "arguments", "maxArguments"},
+		{"behaviors", "observation", "arguments", "maxBytesPerArgument"},
+		{"behaviors", "observation", "arguments", "maxTotalBytes"},
+		{"staleDataPolicy", "action"},
+		{"staleDataPolicy", "maxStalenessSeconds"},
+		{"resourceLimits", "maxCompiledEntries"},
+	} {
+		if value, found, err := unstructured.NestedFieldNoCopy(policy.Object, append([]string{"spec"}, path...)...); err != nil || found {
+			t.Errorf("projected optional default %s = %v, found %v, err %v", strings.Join(path, "."), value, found, err)
+		}
+	}
+	sources, found, err := unstructured.NestedSlice(policy.Object, "spec", "dynamicSources")
+	if err != nil || !found || len(sources) != 1 {
+		t.Fatalf("dynamic sources = %v, found %v, err %v", sources, found, err)
+	}
+	source, ok := sources[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dynamic source = %T", sources[0])
+	}
+	if value, found, err := unstructured.NestedFieldNoCopy(source, "httpRef", "ttlSeconds"); err != nil || found {
+		t.Errorf("projected optional TTL = %v, found %v, err %v", value, found, err)
+	}
+	if required, found, err := unstructured.NestedBool(source, "required"); err != nil || !found || required {
+		t.Errorf("explicit required=false was not preserved: value %v, found %v, err %v", required, found, err)
+	}
+	if enabled, found, err := unstructured.NestedBool(policy.Object, "spec", "behaviors", "observation", "arguments", "enabled"); err != nil || !found || !enabled {
+		t.Errorf("argument collection enablement was not preserved: value %v, found %v, err %v", enabled, found, err)
+	}
+	if value, found, err := unstructured.NestedString(constraint.Object, "spec", "parameters", "failurePolicy"); err != nil || !found || value != "" {
+		t.Errorf("normalization changed source parameters: value %q, found %v, err %v", value, found, err)
 	}
 }
 
@@ -494,6 +568,54 @@ func TestDriverRefreshConfigUpdatesProjectedExclusions(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertExclusions("gatekeeper-system", "kube-*")
+}
+
+func TestDriverValidatesConfigBeforeChangingProjections(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
+	driver := NewDriver(kube, kube)
+	if err := driver.AddTemplate(ctx, runtimeTemplate()); err != nil {
+		t.Fatal(err)
+	}
+	declared := make([]interface{}, maxNamespaceExclusions)
+	for i := range declared {
+		declared[i] = "namespace-" + strconv.Itoa(i)
+	}
+	constraint := runtimeConstraintWithSubject(map[string]interface{}{
+		"kubernetes": map[string]interface{}{"excludedNamespaces": declared},
+	})
+	if err := driver.AddConstraint(ctx, constraint); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := driver.ReconcileConstraint(ctx, constraint); err != nil {
+		t.Fatal(err)
+	}
+	before := RuntimePolicyWatchObject()
+	key := types.NamespacedName{Name: RuntimePolicyName(constraint)}
+	if err := kube.Get(ctx, key, before); err != nil {
+		t.Fatal(err)
+	}
+	for _, exclusions := range [][]string{{""}, {"invalid:namespace"}, {strings.Repeat("n", 66)}, {"extra-namespace"}} {
+		if err := driver.ValidateConfig(exclusions); err == nil {
+			t.Errorf("ValidateConfig(%v) accepted exclusions outside the projected schema", exclusions)
+		}
+	}
+	if err := driver.ValidateConfig([]string{"namespace-0"}); err != nil {
+		t.Fatalf("deduplicated exclusions rejected: %v", err)
+	}
+	after := RuntimePolicyWatchObject()
+	if err := kube.Get(ctx, key, after); err != nil {
+		t.Fatal(err)
+	}
+	if before.GetResourceVersion() != after.GetResourceVersion() {
+		t.Fatal("Config preflight mutated an existing projection")
+	}
+	if err := driver.RemoveConstraint(ctx, constraint); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.ValidateConfig([]string{"extra-namespace"}); err != nil {
+		t.Fatalf("Config stayed invalid after the conflicting Constraint was removed: %v", err)
+	}
 }
 
 func TestDriverDeletesRuntimePolicyFromUIDLessTombstone(t *testing.T) {

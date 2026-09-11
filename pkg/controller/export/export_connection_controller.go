@@ -2,6 +2,7 @@ package export
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -31,6 +32,10 @@ import (
 )
 
 var log = logf.Log.WithName("controller").WithValues(logging.Process, "export_controller")
+
+// ErrStaleConnectionPublishStatus identifies outcomes from an older Connection
+// configuration that must not be attributed to the current one.
+var ErrStaleConnectionPublishStatus = errors.New("connection changed after publish")
 
 type Adder struct {
 	ExportSystem         export.Exporter
@@ -188,12 +193,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, deleteStatus(ctx, r.writer, request.Namespace, request.Name, r.getPod)
 	}
 	if !r.supportsConnection(connObj) {
+		if err := r.system.CloseConnection(request.Name); err != nil {
+			return reconcile.Result{}, fmt.Errorf("closing unsupported connection: %w", err)
+		}
 		err := fmt.Errorf("unsupported connection %s/%s: not enabled for an active export source", request.Namespace, request.Name)
 		log.Error(err, "unsupported connection", "namespace", request.Namespace)
 		connectionErrors := []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}
 		return reconcile.Result{}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, connectionErrors, nil, r.getPod)
 	}
-	err = r.system.UpsertConnection(ctx, connObj.Spec.Config.Value, request.Name, connObj.Spec.Driver)
+	err = r.system.UpsertConnection(ctx, connObj)
 	if err != nil {
 		log.Error(err, "failed to upsert connection", "name", request.Name)
 		return reconcile.Result{Requeue: true}, updateOrCreateConnectionPodStatus(ctx, r.reader, r.writer, r.scheme, connObj, []*statusv1alpha1.ConnectionError{{Type: statusv1alpha1.UpsertConnectionError, Message: err.Error()}}, nil, r.getPod)
@@ -207,8 +215,8 @@ func (r *Reconciler) supportsConnection(connection *connectionv1alpha1.Connectio
 	if connection == nil {
 		return false
 	}
-	if r.runtimeExportEnabled && connection.AllowsRuntimeSource() {
-		return true
+	if connection.AllowsRuntimeSource() {
+		return r.runtimeExportEnabled
 	}
 	if connection.GetName() != r.auditConnectionName {
 		return false
@@ -255,6 +263,36 @@ func UpdateConnectionPodPublishStatus(
 	publishStatus statusv1alpha1.ConnectionPublishStatus,
 	getPod func(context.Context) (*corev1.Pod, error),
 ) error {
+	return updateConnectionPodPublishStatus(ctx, reader, writer, scheme, connObjName, nil, publishStatus, getPod)
+}
+
+// UpdateConnectionPodPublishStatusForConnection verifies the Connection identity
+// and generation before writing a delayed publish outcome.
+func UpdateConnectionPodPublishStatusForConnection(
+	ctx context.Context,
+	reader client.Reader,
+	writer client.Writer,
+	scheme *runtime.Scheme,
+	connection *connectionv1alpha1.Connection,
+	publishStatus statusv1alpha1.ConnectionPublishStatus,
+	getPod func(context.Context) (*corev1.Pod, error),
+) error {
+	if connection == nil {
+		return errors.New("connection is required for publish status")
+	}
+	return updateConnectionPodPublishStatus(ctx, reader, writer, scheme, connection.Name, connection, publishStatus, getPod)
+}
+
+func updateConnectionPodPublishStatus(
+	ctx context.Context,
+	reader client.Reader,
+	writer client.Writer,
+	scheme *runtime.Scheme,
+	connObjName string,
+	expectedConnection *connectionv1alpha1.Connection,
+	publishStatus statusv1alpha1.ConnectionPublishStatus,
+	getPod func(context.Context) (*corev1.Pod, error),
+) error {
 	switch publishStatus.Source {
 	case statusv1alpha1.AuditPublishSource, statusv1alpha1.WebhookPublishSource, statusv1alpha1.RuntimePublishSource:
 	default:
@@ -271,6 +309,14 @@ func UpdateConnectionPodPublishStatus(
 		connObj := &connectionv1alpha1.Connection{}
 		if err := reader.Get(ctx, request, connObj); err != nil {
 			return err
+		}
+		if expectedConnection != nil {
+			if connObj.UID != expectedConnection.UID || connObj.Generation != expectedConnection.Generation || connObj.Namespace != expectedConnection.Namespace {
+				return ErrStaleConnectionPublishStatus
+			}
+			if publishStatus.Source == statusv1alpha1.RuntimePublishSource && !connObj.AllowsRuntimeSource() {
+				return ErrStaleConnectionPublishStatus
+			}
 		}
 		return updateOrCreateConnectionPodStatus(ctx, reader, writer, scheme, connObj, nil, &publishStatus, getPod)
 	})
@@ -312,11 +358,13 @@ func updateOrCreateConnectionPodStatus(ctx context.Context,
 		return fmt.Errorf("getting connection object status in name %s, namespace %s: %w", connObj.GetName(), connObj.GetNamespace(), err)
 	}
 
-	generationChanged := connPodStatusObj.Status.ObservedGeneration != connObj.GetGeneration()
-	if generationChanged {
+	connectionChanged := connPodStatusObj.Status.ConnectionUID != connObj.GetUID() ||
+		connPodStatusObj.Status.ObservedGeneration != connObj.GetGeneration()
+	if connectionChanged {
 		connPodStatusObj.Status.PublishStatuses = nil
 		connPodStatusObj.Status.ConnectionErrors = nil
 	}
+	connPodStatusObj.Status.ConnectionUID = connObj.GetUID()
 
 	if publishStatus != nil {
 		setConnectionPublishStatus(&connPodStatusObj.Status, *publishStatus)

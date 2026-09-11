@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/go-logr/logr"
+	connectionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/connection/v1alpha1"
 	statusv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1alpha1"
 	exportcontroller "github.com/open-policy-agent/gatekeeper/v3/pkg/controller/export"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/export"
 	exportutil "github.com/open-policy-agent/gatekeeper/v3/pkg/export/util"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -30,10 +29,7 @@ const (
 	// user-influenced result from consuming a disproportionate share of the queue.
 	defaultAdmissionExportMaxMessageBytes = 64 * 1024
 	defaultAdmissionExportMaxQueueBytes   = 16 * 1024 * 1024
-	defaultAdmissionExportStatusInterval  = 10 * time.Second
-	defaultAdmissionExportHealthyInterval = time.Minute
 	defaultAdmissionExportLogInterval     = time.Minute
-	admissionExportStatusTimeout          = 2 * time.Second
 	admissionExportShutdownTimeout        = 5 * time.Second
 
 	admissionExportDropReasonMarshalError    = "marshal_error"
@@ -87,7 +83,7 @@ type queuedAdmissionViolationExporter struct {
 	queueMu sync.RWMutex
 	stopped bool
 	stateMu sync.Mutex
-	state   admissionExportPublishState
+	state   exportPublishState
 	// queueBytes includes bytes reserved by concurrent exporters that have not
 	// necessarily completed their channel send yet.
 	queueMessages    atomic.Int64
@@ -120,12 +116,12 @@ func newQueuedAdmissionViolationExporter(system export.Exporter, connectionName,
 		maxMessageBytes: defaultAdmissionExportMaxMessageBytes,
 		maxQueueBytes:   defaultAdmissionExportMaxQueueBytes,
 		maxBatchSize:    defaultAdmissionExportBatchSize,
-		statusInterval:  defaultAdmissionExportStatusInterval,
-		healthyInterval: defaultAdmissionExportHealthyInterval,
+		statusInterval:  defaultExportStatusInterval,
+		healthyInterval: defaultExportHealthyInterval,
 		logInterval:     defaultAdmissionExportLogInterval,
 		shutdownTimeout: admissionExportShutdownTimeout,
 		now:             time.Now,
-		state:           newAdmissionExportPublishState(),
+		state:           newExportPublishState(),
 	}
 }
 
@@ -437,16 +433,6 @@ func (exporter *queuedAdmissionViolationExporter) shouldLog(lastLog *atomic.Int6
 	return lastLog.CompareAndSwap(last, now)
 }
 
-// admissionExportPublishState accumulates health between status intervals;
-// errors are coalesced by class to avoid one status entry per failed message.
-type admissionExportPublishState struct {
-	attempted       bool
-	active          bool
-	errors          map[string]error
-	lastAttemptTime time.Time
-	lastSuccessTime time.Time
-}
-
 // Start publishes queued records serially and batches Connection status updates.
 // It implements manager.Runnable and drains for a bounded interval on shutdown.
 // Backend and status errors are reported through status, logs, and metrics rather
@@ -494,7 +480,7 @@ func (exporter *queuedAdmissionViolationExporter) runStatusReporter(ctx context.
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			statusCtx, cancel := context.WithTimeout(ctx, admissionExportStatusTimeout)
+			statusCtx, cancel := context.WithTimeout(ctx, exportStatusTimeout)
 			exporter.reportPendingPublishStatus(statusCtx, false)
 			cancel()
 		}
@@ -555,7 +541,7 @@ func (exporter *queuedAdmissionViolationExporter) publishBatch(ctx context.Conte
 func (exporter *queuedAdmissionViolationExporter) publishBatchUnbounded(ctx context.Context, messages []any) []error {
 	errorsByMessage := make([]error, len(messages))
 	if batchExporter, ok := exporter.system.(export.BatchExporter); ok && len(messages) > 1 {
-		errorsByMessage = batchExporter.PublishBatch(ctx, exporter.connectionName, exporter.channel, messages)
+		errorsByMessage = batchExporter.PublishBatch(ctx, connectionv1alpha1.WebhookSource, exporter.connectionName, exporter.channel, messages)
 		if len(errorsByMessage) != len(messages) {
 			resultCount := len(errorsByMessage)
 			errorsByMessage = make([]error, len(messages))
@@ -565,7 +551,7 @@ func (exporter *queuedAdmissionViolationExporter) publishBatchUnbounded(ctx cont
 		}
 	} else {
 		for i := range messages {
-			errorsByMessage[i] = exporter.system.Publish(ctx, exporter.connectionName, exporter.channel, messages[i])
+			errorsByMessage[i] = exporter.system.Publish(ctx, connectionv1alpha1.WebhookSource, exporter.connectionName, exporter.channel, messages[i])
 		}
 	}
 	return errorsByMessage
@@ -590,14 +576,7 @@ func (exporter *queuedAdmissionViolationExporter) recordPublishResult(err error)
 
 	exporter.stateMu.Lock()
 	defer exporter.stateMu.Unlock()
-	exporter.state.attempted = true
-	exporter.state.lastAttemptTime = now
-	if err != nil {
-		exporter.state.errors = exportutil.AddPublishError(exporter.state.errors, err)
-		return
-	}
-	exporter.state.active = true
-	exporter.state.lastSuccessTime = now
+	exporter.state.record(now, err)
 }
 
 // shutdown first prevents new enqueues, then drains with a fresh timeout because
@@ -643,13 +622,9 @@ func (exporter *queuedAdmissionViolationExporter) shutdown(selected *queuedAdmis
 }
 
 func (exporter *queuedAdmissionViolationExporter) flushPublishStatus() {
-	flushCtx, cancel := context.WithTimeout(context.Background(), admissionExportStatusTimeout)
+	flushCtx, cancel := context.WithTimeout(context.Background(), exportStatusTimeout)
 	defer cancel()
 	exporter.reportPendingPublishStatus(flushCtx, true)
-}
-
-func newAdmissionExportPublishState() admissionExportPublishState {
-	return admissionExportPublishState{errors: make(map[string]error)}
 }
 
 // reportPendingPublishStatus swaps the accumulated state before API I/O so the
@@ -668,13 +643,13 @@ func (exporter *queuedAdmissionViolationExporter) reportPendingPublishStatus(ctx
 		return
 	}
 	state := exporter.state
-	exporter.state = newAdmissionExportPublishState()
+	exporter.state = newExportPublishState()
 	exporter.stateMu.Unlock()
 
 	if err := exporter.reportPublishStatus(ctx, &state); err != nil {
 		exporter.logPublishError(fmt.Errorf("reporting admission export connection status: %w", err))
 		exporter.stateMu.Lock()
-		exporter.mergePublishStateLocked(state)
+		exporter.state.merge(state)
 		exporter.stateMu.Unlock()
 		return
 	}
@@ -684,45 +659,8 @@ func (exporter *queuedAdmissionViolationExporter) reportPendingPublishStatus(ctx
 	exporter.lastStatusErrors = len(state.errors) > 0
 }
 
-func (exporter *queuedAdmissionViolationExporter) mergePublishStateLocked(previous admissionExportPublishState) {
-	exporter.state.attempted = exporter.state.attempted || previous.attempted
-	exporter.state.active = exporter.state.active || previous.active
-	if previous.lastAttemptTime.After(exporter.state.lastAttemptTime) {
-		exporter.state.lastAttemptTime = previous.lastAttemptTime
-	}
-	if previous.lastSuccessTime.After(exporter.state.lastSuccessTime) {
-		exporter.state.lastSuccessTime = previous.lastSuccessTime
-	}
-	for _, err := range previous.errors {
-		exporter.state.errors = exportutil.AddPublishError(exporter.state.errors, err)
-	}
-}
-
-func (exporter *queuedAdmissionViolationExporter) reportPublishStatus(ctx context.Context, state *admissionExportPublishState) error {
-	keys := make([]string, 0, len(state.errors))
-	for key := range state.errors {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	exportErrors := make([]*statusv1alpha1.ConnectionError, 0, len(keys))
-	for _, key := range keys {
-		exportErrors = append(exportErrors, &statusv1alpha1.ConnectionError{
-			Type:    statusv1alpha1.PublishError,
-			Message: exportutil.PublishErrorKey(state.errors[key]),
-		})
-	}
-	lastAttemptTime := metav1.NewTime(state.lastAttemptTime)
-	publishStatus := statusv1alpha1.ConnectionPublishStatus{
-		Source:          statusv1alpha1.WebhookPublishSource,
-		Active:          state.active,
-		LastAttemptTime: &lastAttemptTime,
-		Errors:          exportErrors,
-	}
-	if !state.lastSuccessTime.IsZero() {
-		lastSuccessTime := metav1.NewTime(state.lastSuccessTime)
-		publishStatus.LastSuccessTime = &lastSuccessTime
-	}
-	return exporter.statusReporter.Report(ctx, exporter.connectionName, publishStatus)
+func (exporter *queuedAdmissionViolationExporter) reportPublishStatus(ctx context.Context, state *exportPublishState) error {
+	return exporter.statusReporter.Report(ctx, exporter.connectionName, state.status(statusv1alpha1.WebhookPublishSource))
 }
 
 // connectionStatusReporter attributes publish health to the pod that owns this
@@ -736,4 +674,8 @@ type connectionStatusReporter struct {
 
 func (reporter *connectionStatusReporter) Report(ctx context.Context, connectionName string, status statusv1alpha1.ConnectionPublishStatus) error {
 	return exportcontroller.UpdateConnectionPodPublishStatus(ctx, reporter.reader, reporter.writer, reporter.scheme, connectionName, status, reporter.getPod)
+}
+
+func (reporter *connectionStatusReporter) ReportForConnection(ctx context.Context, connection *connectionv1alpha1.Connection, status statusv1alpha1.ConnectionPublishStatus) error {
+	return exportcontroller.UpdateConnectionPodPublishStatusForConnection(ctx, reporter.reader, reporter.writer, reporter.scheme, connection, status, reporter.getPod)
 }

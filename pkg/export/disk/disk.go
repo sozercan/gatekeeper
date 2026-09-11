@@ -344,8 +344,8 @@ func (r *Writer) Publish(ctx context.Context, connectionName string, data interf
 	}
 	r.mu.Unlock()
 
-	if topic == util.RuntimeExportSubject {
-		jsonData, err := encodeRuntimeFinding(data)
+	if finding, ok := data.(util.RuntimeFinding); ok {
+		jsonData, err := encodeRuntimeFinding(finding)
 		if err != nil {
 			return err
 		}
@@ -430,24 +430,27 @@ func (r *Writer) Publish(ctx context.Context, connectionName string, data interf
 	return nil
 }
 
-// PublishBatch writes admission records under one Connection lock. Validation
-// failures remain per-message; a shared storage failure applies to every valid
-// record in the batch because their durability cannot be distinguished safely.
+// PublishBatch writes admission and runtime records under one Connection lock.
+// Validation failures remain per-message; a shared storage failure applies to
+// every valid record because their durability cannot be distinguished safely.
 func (r *Writer) PublishBatch(ctx context.Context, connectionName string, messages []any, topic string) []error {
-	if topic == util.RuntimeExportSubject {
-		return r.publishRuntimeBatch(ctx, connectionName, messages, topic)
-	}
 	errorsByMessage := make([]error, len(messages))
 	validMessages := make([][]byte, 0, len(messages))
 	validIndexes := make([]int, 0, len(messages))
 	for i := range messages {
-		message, jsonData, err := decodeExportMessage(messages[i])
+		var jsonData []byte
+		var err error
+		if finding, ok := messages[i].(util.RuntimeFinding); ok {
+			jsonData, err = encodeRuntimeFinding(finding)
+		} else {
+			var message util.ExportMsg
+			message, jsonData, err = decodeExportMessage(messages[i])
+			if err == nil && message.EventType != util.AdmissionViolationEventType {
+				err = fmt.Errorf("batch publishing only supports admission violations and runtime findings")
+			}
+		}
 		if err != nil {
 			errorsByMessage[i] = err
-			continue
-		}
-		if message.EventType != util.AdmissionViolationEventType {
-			errorsByMessage[i] = fmt.Errorf("batch publishing only supports admission violations")
 			continue
 		}
 		validMessages = append(validMessages, jsonData)
@@ -484,56 +487,7 @@ func (r *Writer) PublishBatch(ctx context.Context, connectionName string, messag
 	}
 	r.mu.Unlock()
 	if err != nil {
-		setBatchErrors(errorsByMessage, validIndexes, fmt.Errorf("writing admission violations: %w", err))
-	}
-	return errorsByMessage
-}
-
-func (r *Writer) publishRuntimeBatch(ctx context.Context, connectionName string, messages []any, topic string) []error {
-	errorsByMessage := make([]error, len(messages))
-	validMessages := make([][]byte, 0, len(messages))
-	validIndexes := make([]int, 0, len(messages))
-	for index, message := range messages {
-		encoded, err := encodeRuntimeFinding(message)
-		if err != nil {
-			errorsByMessage[index] = err
-			continue
-		}
-		validMessages = append(validMessages, encoded)
-		validIndexes = append(validIndexes, index)
-	}
-	if len(validMessages) == 0 {
-		return errorsByMessage
-	}
-	if err := ctx.Err(); err != nil {
-		setBatchErrors(errorsByMessage, validIndexes, fmt.Errorf("publish canceled: %w", err))
-		return errorsByMessage
-	}
-
-	connLock, exists := r.acquireCurrentConnectionLock(connectionName, false)
-	if !exists {
-		setBatchErrors(errorsByMessage, validIndexes, fmt.Errorf("invalid connection: %s not found for disk driver", connectionName))
-		return errorsByMessage
-	}
-	defer connLock.Unlock()
-
-	r.mu.Lock()
-	conn, exists := r.openConnections[connectionName]
-	if !exists || !r.connectionLockIsCurrentLocked(connectionName, connLock) {
-		r.mu.Unlock()
-		setBatchErrors(errorsByMessage, validIndexes, fmt.Errorf("invalid connection: %s not found for disk driver", connectionName))
-		return errorsByMessage
-	}
-	r.mu.Unlock()
-
-	err := r.writeAdmissionRecords(ctx, connectionName, &conn, topic, validMessages)
-	r.mu.Lock()
-	if r.connectionLockIsCurrentLocked(connectionName, connLock) {
-		r.openConnections[connectionName] = conn
-	}
-	r.mu.Unlock()
-	if err != nil {
-		setBatchErrors(errorsByMessage, validIndexes, fmt.Errorf("writing runtime findings: %w", err))
+		setBatchErrors(errorsByMessage, validIndexes, fmt.Errorf("writing exported records: %w", err))
 	}
 	return errorsByMessage
 }
@@ -585,21 +539,8 @@ func decodeExportMessage(data interface{}) (util.ExportMsg, []byte, error) {
 	}
 }
 
-func encodeRuntimeFinding(data interface{}) ([]byte, error) {
-	var encoded []byte
-	switch value := data.(type) {
-	case json.RawMessage:
-		encoded = append([]byte(nil), value...)
-	case []byte:
-		encoded = append([]byte(nil), value...)
-	default:
-		var err error
-		encoded, err = json.Marshal(value)
-		if err != nil {
-			return nil, fmt.Errorf("marshaling runtime finding: %w", err)
-		}
-	}
-	trimmed := bytes.TrimSpace(encoded)
+func encodeRuntimeFinding(finding util.RuntimeFinding) ([]byte, error) {
+	trimmed := bytes.TrimSpace(finding)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return nil, fmt.Errorf("invalid runtime finding: expected one JSON object")
 	}

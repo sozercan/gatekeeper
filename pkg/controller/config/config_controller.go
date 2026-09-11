@@ -251,9 +251,10 @@ type ReconcileConfig struct {
 
 	ctEvents chan<- event.GenericEvent
 
-	dirtyMu          sync.Mutex
-	dirtyTemplates   map[string]*v1beta1.ConstraintTemplate
-	runtimeProjector runtimepolicy.Projector
+	dirtyMu              sync.Mutex
+	dirtyTemplates       map[string]*v1beta1.ConstraintTemplate
+	runtimeProjector     runtimepolicy.Projector
+	runtimeConfigPending bool
 }
 
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
@@ -315,14 +316,28 @@ func (r *ReconcileConfig) Reconcile(ctx context.Context, request reconcile.Reque
 		configChanged = r.cacheManager.ExcluderChangedForProcess(process.Webhook, newExcluder)
 	}
 	runtimeConfigChanged := r.cacheManager.ExcluderChangedForProcess(process.Runtime, newExcluder)
-
-	r.cacheManager.ExcludeProcesses(newExcluder)
-	if runtimeConfigChanged && r.runtimeProjector != nil {
-		if refresher, ok := r.runtimeProjector.(runtimepolicy.ConfigRefresher); ok {
-			if err := refresher.RefreshConfig(ctx); err != nil {
-				return reconcile.Result{Requeue: true}, fmt.Errorf("refresh runtime projections after Config change: %w", err)
+	if runtimeConfigChanged && !deleted && r.runtimeProjector != nil {
+		if validator, ok := r.runtimeProjector.(runtimepolicy.ConfigValidator); ok {
+			if err := validator.ValidateConfig(newExcluder.GetExcludedNamespaces(process.Runtime)); err != nil {
+				err = fmt.Errorf("invalid runtime Config exclusions: %w", err)
+				return reconcile.Result{}, errors.Join(err, r.updateOrCreatePodStatus(ctx, instance, err))
 			}
 		}
+	}
+
+	r.cacheManager.ExcludeProcesses(newExcluder)
+	r.runtimeConfigPending = r.runtimeConfigPending || runtimeConfigChanged
+	if r.runtimeConfigPending && r.runtimeProjector != nil {
+		if refresher, ok := r.runtimeProjector.(runtimepolicy.ConfigRefresher); ok {
+			if err := refresher.RefreshConfig(ctx); err != nil {
+				err = fmt.Errorf("refresh runtime projections after Config change: %w", err)
+				if !deleted {
+					err = errors.Join(err, r.updateOrCreatePodStatus(ctx, instance, err))
+				}
+				return reconcile.Result{Requeue: true}, err
+			}
+		}
+		r.runtimeConfigPending = false
 	}
 	var ctTriggerError error
 	if operations.IsAssigned(operations.Generate) && *transform.SyncVAPScope && r.ctEvents != nil {

@@ -68,16 +68,33 @@ func AddRuntimeExportWebhook(mgr manager.Manager, deps Dependencies) error {
 	if deps.ExportSystem == nil {
 		return errors.New("runtime export requires an export system")
 	}
+	connectionExporter, ok := deps.ExportSystem.(gatekeeperexport.ConnectionBatchExporter)
+	if !ok {
+		return errors.New("runtime export requires a Connection-aware batch exporter")
+	}
+	if deps.GetPod == nil {
+		return errors.New("runtime export requires a pod getter")
+	}
 	kubeClient, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		return fmt.Errorf("create runtime export authentication client: %w", err)
 	}
+	statuses := newRuntimeExportStatus(&connectionStatusReporter{
+		reader: mgr.GetAPIReader(),
+		writer: mgr.GetClient(),
+		scheme: mgr.GetScheme(),
+		getPod: deps.GetPod,
+	})
+	if err := mgr.Add(statuses); err != nil {
+		return err
+	}
 	handler := &runtimeExportHandler{
 		reader:               mgr.GetAPIReader(),
-		exporter:             deps.ExportSystem,
+		exporter:             connectionExporter,
 		tokenReviews:         kubeClient.AuthenticationV1().TokenReviews(),
 		subjectAccessReviews: kubeClient.AuthorizationV1().SubjectAccessReviews(),
 		namespace:            util.GetNamespace(),
+		statuses:             statuses,
 	}
 	mgr.GetWebhookServer().Register(runtimeExportPathPrefix, handler)
 	return nil
@@ -85,10 +102,11 @@ func AddRuntimeExportWebhook(mgr manager.Manager, deps Dependencies) error {
 
 type runtimeExportHandler struct {
 	reader               client.Reader
-	exporter             gatekeeperexport.Exporter
+	exporter             gatekeeperexport.ConnectionBatchExporter
 	tokenReviews         typedauthenticationv1.TokenReviewInterface
 	subjectAccessReviews typedauthorizationv1.SubjectAccessReviewInterface
 	namespace            string
+	statuses             *runtimeExportStatus
 }
 
 type runtimeFindingBatch struct {
@@ -146,7 +164,15 @@ func (handler *runtimeExportHandler) ServeHTTP(writer http.ResponseWriter, reque
 		http.Error(writer, err.Error(), status)
 		return
 	}
-	failed := handler.publish(request.Context(), connectionName, batch.Findings)
+	attempt := handler.statuses.begin(connection)
+	results := handler.publish(request.Context(), connection, batch.Findings)
+	handler.statuses.record(attempt, results)
+	failed := 0
+	for _, result := range results {
+		if result != nil {
+			failed++
+		}
+	}
 	if failed != 0 {
 		http.Error(writer, fmt.Sprintf("runtime export failed for %d finding(s)", failed), http.StatusServiceUnavailable)
 		return
@@ -256,29 +282,14 @@ func decodeRuntimeFindingBatch(writer http.ResponseWriter, request *http.Request
 	return batch, 0, nil
 }
 
-func (handler *runtimeExportHandler) publish(ctx context.Context, connectionName string, findings []json.RawMessage) int {
+func (handler *runtimeExportHandler) publish(ctx context.Context, connection *connectionv1alpha1.Connection, findings []json.RawMessage) []error {
 	messages := make([]any, len(findings))
 	for index := range findings {
-		messages[index] = findings[index]
+		messages[index] = exportutil.RuntimeFinding(findings[index])
 	}
-	if batchExporter, ok := handler.exporter.(gatekeeperexport.BatchExporter); ok {
-		results := batchExporter.PublishBatch(ctx, connectionName, exportutil.RuntimeExportSubject, messages)
-		if len(results) != len(messages) {
-			return len(messages)
-		}
-		failed := 0
-		for _, result := range results {
-			if result != nil {
-				failed++
-			}
-		}
-		return failed
+	results := handler.exporter.PublishBatchForConnection(ctx, connectionv1alpha1.RuntimeSource, connection, exportutil.RuntimeExportSubject, messages)
+	if len(results) != len(messages) {
+		return admissionExportPublishErrors(len(messages), fmt.Errorf("batch exporter returned %d results for %d messages", len(results), len(messages)))
 	}
-	failed := 0
-	for _, message := range messages {
-		if err := handler.exporter.Publish(ctx, connectionName, exportutil.RuntimeExportSubject, message); err != nil {
-			failed++
-		}
-	}
-	return failed
+	return results
 }

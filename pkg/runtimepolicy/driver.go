@@ -110,17 +110,7 @@ func (d *Driver) RemoveTemplate(ctx context.Context, template *templates.Constra
 
 func (d *Driver) AddConstraint(_ context.Context, constraint *unstructured.Unstructured) error {
 	key := strings.ToLower(constraint.GetKind())
-	d.mu.RLock()
-	template := d.templates[key]
-	d.mu.RUnlock()
-	if template == nil {
-		return fmt.Errorf("%w: no runtime template for kind %q", ErrInvalidRuntimeConstraint, constraint.GetKind())
-	}
-	version, err := sourceVersion(template)
-	if err != nil {
-		return err
-	}
-	if _, err := ParseConstraintForSource(constraint, version); err != nil {
+	if _, err := d.buildRuntimePolicy(constraint, d.configuredExclusions()); err != nil {
 		return err
 	}
 	d.mu.Lock()
@@ -223,6 +213,38 @@ func (*Driver) RuntimePolicyWatchObject() client.Object { return RuntimePolicyWa
 // reconcile existing projections after Gatekeeper Config changes.
 type ConfigRefresher interface {
 	RefreshConfig(context.Context) error
+}
+
+// ConfigValidator checks runtime exclusions before Config replaces the active
+// process excluder. A rejected Config leaves existing projections usable.
+type ConfigValidator interface {
+	ValidateConfig([]string) error
+}
+
+func (d *Driver) ValidateConfig(exclusions []string) error {
+	if err := validateNamespaceExclusions("Config runtime excludedNamespaces", exclusions); err != nil {
+		return err
+	}
+	d.mu.RLock()
+	constraints := make([]*unstructured.Unstructured, 0)
+	for _, byName := range d.constraints {
+		for _, constraint := range byName {
+			constraints = append(constraints, constraint.DeepCopy())
+		}
+	}
+	d.mu.RUnlock()
+	sort.Slice(constraints, func(i, j int) bool {
+		if constraints[i].GetKind() == constraints[j].GetKind() {
+			return constraints[i].GetName() < constraints[j].GetName()
+		}
+		return constraints[i].GetKind() < constraints[j].GetKind()
+	})
+	for _, constraint := range constraints {
+		if _, err := d.buildRuntimePolicy(constraint, exclusions); err != nil {
+			return fmt.Errorf("runtime Config exclusions for %s %q: %w", constraint.GetKind(), constraint.GetName(), err)
+		}
+	}
+	return nil
 }
 
 func (d *Driver) configuredExclusions() []string {
