@@ -20,9 +20,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,6 +79,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -1914,9 +1920,7 @@ func TestReconcile(t *testing.T) {
 
 		logger.Info("Running test: Review request initiated from an enforcement point not supported by client should result in error")
 		constraintTemplate := makeReconcileConstraintTemplate(suffix)
-		cstr := newDenyAllCstrWithScopedEA(suffix, util.WebhookEnforcementPoint)
 
-		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, cstr))
 		t.Cleanup(testutils.DeleteObjectAndConfirm(ctx, t, c, expectedCRD(suffix)))
 		testutils.CreateThenCleanup(ctx, t, c, constraintTemplate)
 
@@ -2518,6 +2522,112 @@ func TestManageVAP_RefreshesExistingSharedPolicy(t *testing.T) {
 	}
 }
 
+type vapCleanupTrackingManager struct {
+	manager.Manager
+	workers []*templateVAPCleanup
+}
+
+func (mgr *vapCleanupTrackingManager) Add(runnable manager.Runnable) error {
+	if err := mgr.Manager.Add(runnable); err != nil {
+		return err
+	}
+	if worker, ok := runnable.(*templateVAPCleanup); ok {
+		mgr.workers = append(mgr.workers, worker)
+	}
+	return nil
+}
+
+func TestNewReconciler_PerConstraintModeCleanupAfterDiscoveryRecovers(t *testing.T) {
+	for _, groupVersion := range []schema.GroupVersion{admissionregistrationv1.SchemeGroupVersion, admissionregistrationv1beta1.SchemeGroupVersion} {
+		t.Run(groupVersion.Version, func(t *testing.T) {
+			fixture, live, policies := newCleanupTestWorker(t, groupVersion, 1)
+			transform.SetVapAPIEnabled(nil)
+			transform.SetGroupVersion(nil)
+			t.Cleanup(func() {
+				transform.SetVapAPIEnabled(nil)
+				transform.SetGroupVersion(nil)
+			})
+			mgr, wm := testutils.SetupManager(t, cfg)
+			trackingManager := &vapCleanupTrackingManager{Manager: mgr}
+			resources, err := json.Marshal(&metav1.APIResourceList{
+				TypeMeta:     metav1.TypeMeta{Kind: "APIResourceList", APIVersion: "v1"},
+				GroupVersion: groupVersion.String(),
+				APIResources: []metav1.APIResource{{
+					Name: "validatingadmissionpolicies", Kind: "ValidatingAdmissionPolicy", Verbs: []string{"get", "list"},
+				}},
+			})
+			require.NoError(t, err)
+			var recovered atomic.Bool
+			var failedDiscoveryCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !recovered.Load() {
+					failedDiscoveryCalls.Add(1)
+					http.Error(w, "temporary discovery failure", http.StatusServiceUnavailable)
+					return
+				}
+				if r.URL.Path != "/apis/"+groupVersion.String() {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write(resources); err != nil {
+					t.Errorf("writing discovery response: %v", err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+			require.NoError(t, os.WriteFile(kubeconfig, []byte(fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: discovery
+  cluster:
+    server: %s
+contexts:
+- name: discovery
+  context:
+    cluster: discovery
+    user: discovery
+current-context: discovery
+users:
+- name: discovery
+  user: {}
+`, server.URL)), 0o600))
+			t.Setenv("KUBECONFIG", kubeconfig)
+
+			events := make(chan event.GenericEvent, 1)
+			r, err := newReconciler(trackingManager, nil, wm, nil, events, events, nil, nil, nil)
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, failedDiscoveryCalls.Load(), int32(2))
+			require.Nil(t, transform.VapAPIEnabled, "transient discovery failure must remain retryable")
+			require.NotNil(t, r.vapCleanup, "generate+constraint mode must register cleanup before discovery succeeds")
+			t.Cleanup(r.vapCleanup.queue.ShutDown)
+			require.Len(t, trackingManager.workers, 1)
+			require.Same(t, r.vapCleanup, trackingManager.workers[0])
+			require.True(t, r.vapCleanup.groupVersion.Empty())
+			r.Client = &cleanupWriteClient{Client: fixture.reconciler.Client, writer: live}
+			r.apiReader = live
+			owner := metav1.GetControllerOfNoCopy(policies[0])
+			require.NotNil(t, owner)
+			ct := &v1beta1.ConstraintTemplate{}
+			require.NoError(t, live.Get(context.Background(), types.NamespacedName{Name: owner.Name}, ct))
+			unversioned := &templates.ConstraintTemplate{}
+			require.NoError(t, live.Scheme().Convert(ct, unversioned, nil))
+
+			recovered.Store(true)
+			require.NoError(t, r.manageVAP(context.Background(), ct, unversioned, &statusv1beta1.ConstraintTemplatePodStatus{}, logger, true))
+			require.Equal(t, 1, r.vapCleanup.queue.Len(), "recovered discovery must allow reconciliation to enqueue cleanup")
+			require.True(t, r.vapCleanup.groupVersion.Empty(), "the worker must resolve its version lazily")
+			require.NoError(t, live.Get(context.Background(), client.ObjectKeyFromObject(policies[0]), policies[0]))
+			r.vapCleanup.processNextBatch(context.Background())
+			require.Equal(t, groupVersion, r.vapCleanup.groupVersion)
+			require.Equal(t, 1, live.listCalls)
+			require.Zero(t, r.vapCleanup.queue.Len())
+			require.Zero(t, r.vapCleanup.queue.NumRequeues(ct.GetName()))
+			require.True(t, apierrors.IsNotFound(live.Get(context.Background(), client.ObjectKeyFromObject(policies[0]), policies[0])), "cleanup must use the recovered API version")
+		})
+	}
+}
+
 func TestManageVAP_PerConstraintModeDoesNotCreateTemplateVAP(t *testing.T) {
 	setConstraintVAPGenerationMode(t)
 	setVAPTestGlobals(t, &admissionregistrationv1.SchemeGroupVersion)
@@ -2875,8 +2985,23 @@ func TestVAPReferencesShareOneScan(t *testing.T) {
 	}
 }
 
+type vapBindingLookupReader struct {
+	client.Reader
+	getCalls int
+	getErr   error
+}
+
+func (reader *vapBindingLookupReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	reader.getCalls++
+	if reader.getErr != nil {
+		return reader.getErr
+	}
+	return reader.Reader.Get(ctx, key, obj, opts...)
+}
+
 func TestConstraintTemplateForVAPBinding(t *testing.T) {
 	controller := true
+	reader := &vapBindingLookupReader{getErr: errors.New("unexpected policy lookup")}
 	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metav1.ObjectMeta{
 		Name: "binding",
 		OwnerReferences: []metav1.OwnerReference{{
@@ -2888,12 +3013,12 @@ func TestConstraintTemplateForVAPBinding(t *testing.T) {
 	}}
 
 	binding.Spec.PolicyName = transform.GetTemplateVAPName("K8sRequiredLabels")
-	requests := constraintTemplateForVAPBinding(context.Background(), binding)
+	requests := constraintTemplateForVAPBinding(context.Background(), binding, reader)
 	require.Equal(t, []reconcile.Request{{NamespacedName: types.NamespacedName{Name: "k8srequiredlabels"}}}, requests)
 
 	for index := range 100 {
 		binding.Spec.PolicyName = transform.GetConstraintVAPName("K8sRequiredLabels", fmt.Sprintf("constraint-%d", index))
-		require.Empty(t, constraintTemplateForVAPBinding(context.Background(), binding))
+		require.Empty(t, constraintTemplateForVAPBinding(context.Background(), binding, reader))
 	}
 	betaBinding := &admissionregistrationv1beta1.ValidatingAdmissionPolicyBinding{
 		ObjectMeta: *binding.ObjectMeta.DeepCopy(),
@@ -2901,13 +3026,14 @@ func TestConstraintTemplateForVAPBinding(t *testing.T) {
 			PolicyName: transform.GetTemplateVAPName("K8sRequiredLabels"),
 		},
 	}
-	require.Equal(t, requests, constraintTemplateForVAPBinding(context.Background(), betaBinding))
+	require.Equal(t, requests, constraintTemplateForVAPBinding(context.Background(), betaBinding, reader))
 	betaBinding.Spec.PolicyName = transform.GetConstraintVAPName("K8sRequiredLabels", "constraint")
-	require.Empty(t, constraintTemplateForVAPBinding(context.Background(), betaBinding))
+	require.Empty(t, constraintTemplateForVAPBinding(context.Background(), betaBinding, reader))
 
+	require.Zero(t, reader.getCalls, "Constraint-owned bindings must map without policy lookups")
 	binding.Spec.PolicyName = transform.GetTemplateVAPName("K8sRequiredLabels")
 	binding.OwnerReferences[0].APIVersion = "apps/v1"
-	require.Empty(t, constraintTemplateForVAPBinding(context.Background(), binding))
+	require.Empty(t, constraintTemplateForVAPBinding(context.Background(), binding, reader))
 }
 
 func TestConstraintTemplateForVAPBindingUpdate(t *testing.T) {
@@ -2938,9 +3064,13 @@ func TestConstraintTemplateForVAPBindingUpdate(t *testing.T) {
 					}
 					queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
 					t.Cleanup(queue.ShutDown)
-					mapper := handler.EnqueueRequestsFromMapFunc(constraintTemplateForVAPBinding)
+					reader := &vapBindingLookupReader{getErr: errors.New("unexpected policy lookup")}
+					mapper := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+						return constraintTemplateForVAPBinding(ctx, obj, reader)
+					})
 					mapper.Update(context.Background(), event.UpdateEvent{ObjectOld: makeBinding(transition.oldPolicy), ObjectNew: makeBinding(transition.newPolicy)}, queue)
 					require.Equal(t, transition.wantEvents, queue.Len())
+					require.Zero(t, reader.getCalls, "Constraint-owned updates must not look up policies")
 				})
 			}
 		})

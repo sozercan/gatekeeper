@@ -7,6 +7,7 @@ import (
 
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/constraint"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/drivers/k8scel/transform"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,6 +63,18 @@ func (worker *templateVAPCleanup) Start(ctx context.Context) error {
 }
 
 func (worker *templateVAPCleanup) processNextBatch(ctx context.Context) {
+	if worker.queue.Len() == 0 {
+		return
+	}
+	// Startup discovery can fail transiently. Resolve the version on the worker
+	// goroutine once reconciliation has discovered the API and queued cleanup.
+	if worker.groupVersion.Empty() {
+		enabled, groupVersion := transform.IsVapAPIEnabled(&logger)
+		if !enabled || groupVersion == nil {
+			return
+		}
+		worker.groupVersion = *groupVersion
+	}
 	batchCtx, cancel := context.WithTimeout(ctx, vapCleanupBatchTimeout)
 	defer cancel()
 	batch := make([]string, 0, vapCleanupBatchSize)

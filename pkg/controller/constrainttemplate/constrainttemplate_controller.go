@@ -218,8 +218,12 @@ func newReconciler(mgr manager.Manager, cfClient *constraintclient.Client, wm *w
 	if getPod == nil {
 		reconciler.getPod = reconciler.defaultGetPod
 	}
-	if enabled, groupVersion := transform.IsVapAPIEnabled(&logger); enabled && groupVersion != nil && operations.IsAssigned(operations.Generate) && constraint.GetVAPGenerationMode() == constraint.VAPGenerationModeConstraint {
-		reconciler.vapCleanup = newTemplateVAPCleanup(reconciler, *groupVersion)
+	if operations.IsAssigned(operations.Generate) && constraint.GetVAPGenerationMode() == constraint.VAPGenerationModeConstraint {
+		var groupVersion schema.GroupVersion
+		if enabled, discoveredVersion := transform.IsVapAPIEnabled(&logger); enabled && discoveredVersion != nil {
+			groupVersion = *discoveredVersion
+		}
+		reconciler.vapCleanup = newTemplateVAPCleanup(reconciler, groupVersion)
 		if err := mgr.Add(reconciler.vapCleanup); err != nil {
 			reconciler.vapCleanup.queue.ShutDown()
 			return nil, err
@@ -301,7 +305,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler, events <-chan event.Generi
 			}
 			err = c.Watch(
 				source.Kind(mgr.GetCache(), obj,
-					handler.TypedEnqueueRequestsFromMapFunc(constraintTemplateForVAPBinding)))
+					handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+						return constraintTemplateForVAPBinding(ctx, obj, mgr.GetCache())
+					})))
 			if err != nil {
 				return err
 			}
@@ -803,24 +809,38 @@ func vapBindingForVersion(gvk *schema.GroupVersion) (client.Object, error) {
 	}
 }
 
-func constraintTemplateForVAPBinding(_ context.Context, obj client.Object) []reconcile.Request {
-	owner := metav1.GetControllerOfNoCopy(obj)
-	if owner == nil || !strings.HasPrefix(owner.APIVersion, statusv1beta1.ConstraintsGroup+"/") {
-		return nil
-	}
+func constraintTemplateForVAPBinding(ctx context.Context, obj client.Object, reader client.Reader) []reconcile.Request {
 	var policyName string
+	var policy client.Object
 	switch binding := obj.(type) {
 	case *admissionregistrationv1.ValidatingAdmissionPolicyBinding:
 		policyName = binding.Spec.PolicyName
+		policy = &admissionregistrationv1.ValidatingAdmissionPolicy{}
 	case *admissionregistrationv1beta1.ValidatingAdmissionPolicyBinding:
 		policyName = binding.Spec.PolicyName
+		policy = &admissionregistrationv1beta1.ValidatingAdmissionPolicy{}
 	default:
 		return nil
 	}
-	if policyName != transform.GetTemplateVAPName(owner.Kind) {
+	owner := metav1.GetControllerOfNoCopy(obj)
+	if owner != nil && strings.HasPrefix(owner.APIVersion, statusv1beta1.ConstraintsGroup+"/") {
+		if policyName != transform.GetTemplateVAPName(owner.Kind) {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: strings.ToLower(owner.Kind)}}}
+	}
+	// User-created bindings can keep a shared policy alive without a Constraint owner.
+	if reader == nil || policyName == "" {
 		return nil
 	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: strings.ToLower(owner.Kind)}}}
+	if err := reader.Get(ctx, types.NamespacedName{Name: policyName}, policy); err != nil {
+		return nil
+	}
+	owner = metav1.GetControllerOfNoCopy(policy)
+	if owner == nil || owner.Kind != "ConstraintTemplate" || !strings.HasPrefix(owner.APIVersion, v1beta1.SchemeGroupVersion.Group+"/") {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner.Name}}}
 }
 
 func getVAPName(constraintName string) string {

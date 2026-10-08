@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
+	statusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/constraint"
 	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics"
 	"github.com/stretchr/testify/require"
@@ -18,9 +20,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 func newCleanupTestWorker(t *testing.T, groupVersion schema.GroupVersion, count int) (*templateVAPCleanup, *vapBindingListClient, []client.Object) {
@@ -105,6 +111,63 @@ func TestTemplateVAPCleanupBatchesAndRetainsReferences(t *testing.T) {
 					require.NoError(t, err, "both cached and live references must retain their policies")
 				}
 			}
+		})
+	}
+}
+
+func TestTemplateVAPCleanupAfterLastOwnerlessBindingDeletion(t *testing.T) {
+	for _, groupVersion := range []schema.GroupVersion{admissionregistrationv1.SchemeGroupVersion, admissionregistrationv1beta1.SchemeGroupVersion} {
+		t.Run(groupVersion.Version, func(t *testing.T) {
+			ctx := context.Background()
+			worker, live, policies := newCleanupTestWorker(t, groupVersion, 1)
+			setVAPTestGlobals(t, &groupVersion)
+			cached := worker.reconciler.Client
+			worker.reconciler.Client = &cleanupWriteClient{Client: cached, writer: live}
+			policy := policies[0]
+			addCleanupTestBinding(t, cached, groupVersion, policy.GetName())
+			addCleanupTestBinding(t, live, groupVersion, policy.GetName())
+			binding, err := vapBindingForVersion(&groupVersion)
+			require.NoError(t, err)
+			require.NoError(t, cached.Get(ctx, types.NamespacedName{Name: policy.GetName() + "-binding"}, binding))
+			require.Empty(t, binding.GetOwnerReferences())
+			owner := metav1.GetControllerOfNoCopy(policy)
+			require.NotNil(t, owner)
+			ct := &v1beta1.ConstraintTemplate{}
+			require.NoError(t, live.Get(ctx, types.NamespacedName{Name: owner.Name}, ct))
+			unversioned := &templates.ConstraintTemplate{}
+			require.NoError(t, live.Scheme().Convert(ct, unversioned, nil))
+			require.True(t, metav1.IsControlledBy(policy, ct))
+
+			require.NoError(t, worker.reconciler.manageVAP(ctx, ct, unversioned, &statusv1beta1.ConstraintTemplatePodStatus{}, logger, true))
+			require.Equal(t, 1, worker.queue.Len())
+			worker.processNextBatch(ctx)
+			require.NoError(t, live.Get(ctx, client.ObjectKeyFromObject(policy), policy), "the ownerless binding must retain its shared policy")
+			require.Zero(t, worker.queue.Len())
+			require.Zero(t, worker.queue.NumRequeues(ct.GetName()))
+
+			require.NoError(t, cached.Delete(ctx, binding))
+			require.NoError(t, live.Delete(ctx, binding))
+			requests := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+			t.Cleanup(requests.ShutDown)
+			reader := &vapBindingLookupReader{Reader: live}
+			mapper := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				return constraintTemplateForVAPBinding(ctx, obj, reader)
+			})
+			mapper.Delete(ctx, event.DeleteEvent{Object: binding}, requests)
+			require.Equal(t, 1, requests.Len(), "deleting the last ownerless binding must enqueue its policy's template")
+			require.Equal(t, 1, reader.getCalls, "ownerless bindings must look up the referenced policy using the supplied reader")
+			request, shutdown := requests.Get()
+			require.False(t, shutdown)
+			requests.Done(request)
+			require.Equal(t, types.NamespacedName{Name: ct.GetName()}, request.NamespacedName)
+
+			require.NoError(t, worker.reconciler.manageVAP(ctx, ct, unversioned, &statusv1beta1.ConstraintTemplatePodStatus{}, logger, true))
+			require.Equal(t, 1, worker.queue.Len())
+			worker.processNextBatch(ctx)
+			require.Zero(t, worker.queue.Len())
+			require.Zero(t, worker.queue.NumRequeues(ct.GetName()))
+			require.Equal(t, 1, live.listCalls, "cleanup must check that no live bindings remain")
+			require.True(t, apierrors.IsNotFound(live.Get(ctx, client.ObjectKeyFromObject(policy), policy)), "the now-unreferenced shared policy must be removed")
 		})
 	}
 }
