@@ -37,3 +37,4 @@ This project is governed by the [CNCF Code of conduct](https://github.com/cncf/f
 
 For details on how to report vulnerabilities and security release process, please refer to [Gatekeeper Security](https://open-policy-agent.github.io/gatekeeper/website/docs/security) for more information.
 switch-check-1027-2015
+nano-switch-check-1027-2015
